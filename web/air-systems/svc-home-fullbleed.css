@@ -1,0 +1,95 @@
+/* Silicon Valley Comfort, site-wide layout normalizer
+   Paste into Appearance > Customize > Additional CSS
+   Backgrounds run wall to wall. Content lives in one centered container. */
+
+:root {
+  --svc-container: 1200px;                        /* one content width for the whole site */
+  --svc-gutter: clamp(1.15rem, 5vw, 2.5rem);      /* side breathing room, phone to desktop */
+  --svc-section: clamp(3rem, 7vw, 5.5rem);        /* vertical rhythm between sections */
+}
+
+/* 0. Unbox the theme's content shell. This is the white card that leaves trim
+      down both sides of every colored section. Kadence calls it Content Style Boxed. */
+.site-content,
+.site-content .content-container,
+.content-container.site-container,
+.site-main,
+.content-area,
+.entry-content-wrap {
+  max-width: none;
+  padding-left: 0;
+  padding-right: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+/* 1. Kill the white trim. Full-width sections actually go full width.
+      Negative margins instead of 100vw so a scrollbar cannot cause sideways scroll. */
+.entry-content > .alignfull,
+.entry-content > .wp-block-group.alignfull,
+.wp-site-blocks > .alignfull,
+.site-content .alignfull {
+  width: auto;
+  max-width: none;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 2. Content inside a full-bleed section stops at the container and centers. */
+.alignfull > .wp-block-group__inner-container,
+.alignfull > .wp-block-columns,
+.alignfull > .kt-row-column-wrap,
+.alignfull > .kb-row-layout-wrap,
+.entry-content > *:not(.alignfull):not(.alignwide) {
+  max-width: var(--svc-container);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--svc-gutter);
+  padding-right: var(--svc-gutter);
+}
+
+/* 3. One vertical rhythm, not twelve different guesses. */
+.entry-content > .alignfull,
+.entry-content > .wp-block-group.has-background {
+  padding-top: var(--svc-section);
+  padding-bottom: var(--svc-section);
+}
+
+/* 4. Text stops kissing the edge of a colored block. */
+.wp-block-group.has-background,
+.wp-block-column.has-background,
+.kt-inside-inner-col {
+  padding-left: var(--svc-gutter);
+  padding-right: var(--svc-gutter);
+}
+
+/* 5. No doubled inset when a full-bleed section is nested inside another one. */
+.alignfull .alignfull {
+  width: 100%;
+  max-width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* 6. Phones get tighter vertical spacing, same container logic. */
+@media (max-width: 781px) {
+  :root {
+    --svc-section: 2.25rem;
+  }
+  .wp-block-columns {
+    gap: 1.25rem;
+  }
+  /* columns stack on phones unless a block opts out in the editor */
+  .wp-block-columns:not(.is-not-stacked-on-mobile) {
+    flex-wrap: wrap;
+  }
+  .wp-block-columns:not(.is-not-stacked-on-mobile) > .wp-block-column {
+    flex-basis: 100% !important;
+  }
+}
+
+/* 7. Guard rail. Uncomment only if a stray wide block causes sideways scroll. */
+/* html { overflow-x: hidden; } */
