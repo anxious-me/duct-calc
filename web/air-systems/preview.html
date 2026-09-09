@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>air.systems layout fix, before and after</title>
+
+<!-- the fix, toggled by the button in the corner -->
+<link id="svc-fix" rel="stylesheet" href="svc-home-fullbleed.css" disabled>
+
+<style>
+  /* This block imitates a WordPress theme running in boxed content mode.
+     It is the bug, on purpose. Do not copy any of it to the live site. */
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; color: #2a2a2a; background: #fff; }
+  .site-header { background: #2a2a2a; color: #f6f1e6; padding: 1rem; text-align: center; font-weight: 600; letter-spacing: .02em; }
+  .site-content { padding: 2.5rem 2rem; }
+  .content-container { max-width: 1140px; margin: 0 auto; background: #fff; padding: 2rem; box-shadow: 0 2px 14px rgba(0,0,0,.08); border-radius: 8px; }
+  .wp-block-group { margin: 0 0 1.25rem; }
+  .has-background { padding: .6rem; }
+  h1 { font-size: 2.2rem; margin: .2rem 0 .6rem; }
+  h2 { font-size: 1.6rem; margin: .2rem 0 .5rem; }
+  p { font-size: 1.1rem; line-height: 1.55; margin: .4rem 0; }
+  .wp-block-columns { display: flex; gap: 1rem; }
+  .wp-block-column { flex: 1; }
+  .stat { font-size: 2.2rem; font-weight: 600; color: #b8392c; }
+
+  /* the toggle itself, not part of the fix */
+  #svc-toggle { position: fixed; right: 14px; bottom: 14px; z-index: 999; padding: .7rem 1.1rem; border: 0; border-radius: 999px;
+    background: #b8392c; color: #fff; font: 600 1rem system-ui, sans-serif; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+  #svc-state { position: fixed; left: 14px; bottom: 14px; z-index: 999; padding: .55rem .9rem; border-radius: 8px;
+    background: rgba(42,42,42,.9); color: #f6f1e6; font: 500 .95rem system-ui, sans-serif; }
+</style>
+</head>
+<body>
+
+<div class="site-header">Silicon Valley Comfort</div>
+
+<div class="site-content"><div class="content-container"><div class="entry-content">
+
+  <div class="wp-block-group alignfull has-background" style="background:#f6f1e6">
+    <div class="wp-block-group__inner-container">
+      <h1>HVAC Repair In San Jose</h1>
+      <p>Same day service across Santa Clara and San Mateo counties. Bryant Systems Specialist.</p>
+    </div>
+  </div>
+
+  <div class="wp-block-group alignfull has-background" style="background:#2a2a2a;color:#f6f1e6">
+    <div class="wp-block-group__inner-container">
+      <div class="wp-block-columns">
+        <div class="wp-block-column"><div class="stat">8+</div><p>Years in the South Bay</p></div>
+        <div class="wp-block-column"><div class="stat">24/7</div><p>Same day response</p></div>
+        <div class="wp-block-column"><div class="stat">17</div><p>Zip codes covered</p></div>
+        <div class="wp-block-column"><div class="stat">$99</div><p>Residential diagnostic</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wp-block-group">
+    <div class="wp-block-group__inner-container">
+      <h2>What A Real Diagnostic Looks Like</h2>
+      <p>Static pressure, superheat and subcool, delta T across the coil, and a real number before anyone
+         turns a wrench. Title 24 paperwork handled on replacements.</p>
+    </div>
+  </div>
+
+</div></div></div>
+
+<div id="svc-state">Fix is OFF, this is the bug</div>
+<button id="svc-toggle" type="button">Turn the fix on</button>
+
+<script>
+  var link = document.getElementById('svc-fix');
+  var btn = document.getElementById('svc-toggle');
+  var state = document.getElementById('svc-state');
+  btn.addEventListener('click', function () {
+    link.disabled = !link.disabled;
+    var on = !link.disabled;
+    btn.textContent = on ? 'Turn the fix off' : 'Turn the fix on';
+    state.textContent = on ? 'Fix is ON, backgrounds full bleed' : 'Fix is OFF, this is the bug';
+  });
+</script>
+
+</body>
+</html>
