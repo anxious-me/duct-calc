@@ -65,8 +65,6 @@
     '.msg{padding:10px 13px;border-radius:16px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word}' +
     '.row.them .msg{background:#fff;border:1px solid #e3e7ec;border-bottom-left-radius:4px}' +
     '.row.me .msg{background:' + accent + ';color:#fff;border-bottom-right-radius:4px}' +
-    '.note{font-size:12.5px;color:#4a525c;background:#fff8e6;border:1px solid #f3dfa8;border-radius:10px;padding:10px 12px;line-height:1.4}' +
-    '.note a{color:inherit;font-weight:700}' +
     '.typing{font-size:12.5px;color:#6b7480;padding:0 16px 6px;background:#f5f7fa;display:none}' +
     '.form{display:flex;gap:8px;padding:10px;border-top:1px solid #e3e7ec;background:#fff}' +
     'textarea{flex:1;resize:none;border:1px solid #d5dbe2;border-radius:12px;padding:10px 12px;font-size:16px;line-height:1.35;max-height:120px;outline:none;color:#1b1f24;background:#fff}' +
@@ -144,13 +142,6 @@
   function render() {
     list.innerHTML = ''
     addRow('them', 'John', greeting())
-    var note = document.createElement('div')
-    note.className = 'note'
-    note.innerHTML =
-      'I read every message, but I might be under a house or asleep. If it can\'t wait, <a href="tel:' +
-      PHONE.replace(/-/g, '') + '">call ' + PHONE + '</a>. No answer? Call again. And again. The phone wakes me up and I\'ll come help. ' +
-      'Smell gas or hear a CO alarm? Get outside and call 911 or PG&amp;E first.'
-    list.appendChild(note)
     state.messages.forEach(function (m) {
       if (m.from === 'customer') addRow('me', '', m.text)
       else if (m.from === 'john') addRow('them', 'John', m.text)
@@ -164,7 +155,7 @@
   }
 
   function greeting() {
-    return 'Hey, this is John with Silicon Valley Comfort. You\'re texting the actual guy with the gauges, not a call center. What\'s your system doing?'
+    return 'Hey, it\'s John. What\'s your system doing?'
   }
 
   function addRow(kind, who, text) {
