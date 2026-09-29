@@ -2,9 +2,11 @@
 
 A chat bubble for the bottom right corner of air.systems, on desktop and mobile.
 Customers type, John gets the message on his phone in Telegram and replies from
-there. If John doesn't answer within 90 seconds, a Claude bot answers from the
-knowledge base in `src/knowledge.md` and copies John on what it said. John can
-jump back in any time and his reply goes straight to the customer.
+there. If John doesn't answer within 90 seconds, a Claude AI assistant answers
+and copies John on what it said. The assistant is always labeled as an AI bot on
+the site and never speaks as John. It answers HVAC questions and uses the
+knowledge base in `src/knowledge.md` for business facts. John's own replies are
+labeled "John (live reply)".
 
 ## How it works
 
@@ -25,7 +27,7 @@ Timing rules (all in `wrangler.toml`):
 | Quiet hours (9pm to 7am Pacific) or John sent `/away` | 20 seconds |
 | John replied `/me` to that chat | Never, bot is off for that chat |
 
-The bot always says it is John's assistant. It never pretends to be John.
+The bot is labeled "AI assistant (bot)" everywhere. It never pretends to be John, never says John is busy or asleep, and tells anyone who needs service right away to call 408-691-5940.
 
 ## Telegram commands (John's phone)
 
@@ -92,9 +94,10 @@ and an Anthropic API key (pay per use, pennies per chat).
 ## Updating what the bot knows
 
 Edit `src/knowledge.md` and run `npm run deploy`. Plain English is fine. The
-bot only answers from that file and hands everything else to John, so if you
-want it to talk about warranties, financing, rebates, or brands you service,
-add that info there.
+bot answers general HVAC questions from its own expertise, but business facts
+(services, rates, area, booking) come only from that file, and anything not in
+it goes to John. If you want it to talk about warranties, financing, rebates,
+or brands you service, add that info there.
 
 ## Costs
 

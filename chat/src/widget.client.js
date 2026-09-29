@@ -49,7 +49,7 @@
     '.panel{position:fixed;right:20px;bottom:92px;width:370px;height:560px;max-height:calc(100vh - 120px);background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.3);display:none;flex-direction:column;overflow:hidden;color:#1b1f24}' +
     '.panel.open{display:flex}' +
     '.head{background:' + accent + ';color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px}' +
-    '.avatar{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex:none}' +
+    '.avatar{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.2);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none}' +
     '.title{font-weight:700;font-size:16px;line-height:1.2}' +
     '.sub{font-size:12.5px;opacity:.9;margin-top:2px;display:flex;align-items:center;gap:6px}' +
     '.dot{width:8px;height:8px;border-radius:50%;background:#3ddc84}' +
@@ -81,8 +81,8 @@
     '</style>' +
     '<div class="panel" role="dialog" aria-label="Chat with Silicon Valley Comfort">' +
     '  <div class="head">' +
-    '    <div class="avatar">JT</div>' +
-    '    <div class="grow"><div class="title">Text John</div><div class="sub"><span class="dot"></span><span class="status">Silicon Valley Comfort</span></div></div>' +
+    '    <div class="avatar">SVC</div>' +
+    '    <div class="grow"><div class="title">Silicon Valley Comfort</div><div class="sub"><span class="dot"></span><span class="status">AI assistant (bot)</span></div></div>' +
     '    <a class="icon" href="tel:' + PHONE.replace(/-/g, '') + '" aria-label="Call ' + PHONE + '" title="Call ' + PHONE + '">' + svgPhone() + '</a>' +
     '    <button class="icon close" aria-label="Close chat">' + svgClose() + '</button>' +
     '  </div>' +
@@ -90,7 +90,7 @@
     '  <div class="typing">Typing...</div>' +
     '  <form class="form"><textarea rows="1" placeholder="Type a message..." aria-label="Message"></textarea><button class="send" type="submit" aria-label="Send">' + svgSend() + '</button></form>' +
     '</div>' +
-    '<div class="teaser">Questions? Text the actual tech.</div>' +
+    '<div class="teaser">Questions? Ask our AI assistant.</div>' +
     '<button class="bubble" aria-label="Open chat">' + svgChat() + '<span class="badge"></span></button>'
 
   var $ = function (sel) { return root.querySelector(sel) }
@@ -141,21 +141,21 @@
   // ---------- rendering ----------
   function render() {
     list.innerHTML = ''
-    addRow('them', 'John', greeting())
+    addRow('them', 'AI assistant (bot)', greeting())
     state.messages.forEach(function (m) {
       if (m.from === 'customer') addRow('me', '', m.text)
-      else if (m.from === 'john') addRow('them', 'John', m.text)
-      else addRow('them', 'John\'s assistant (bot)', m.text)
+      else if (m.from === 'john') addRow('them', 'John (live reply)', m.text)
+      else addRow('them', 'AI assistant (bot)', m.text)
     })
     list.scrollTop = list.scrollHeight
     badge.textContent = state.unread
     badge.style.display = state.unread && !open ? 'block' : 'none'
     $('.dot').classList.toggle('away', status === 'away')
-    $('.status').textContent = status === 'away' ? 'After hours, bot will help' : 'Usually replies in minutes'
+    $('.status').textContent = 'AI assistant (bot)'
   }
 
   function greeting() {
-    return 'Hey, it\'s John. What\'s your system doing?'
+    return 'Hi, I\'m the Silicon Valley Comfort AI assistant. I\'m a bot, not John. Ask me any HVAC question. If you need service right now, call John at ' + PHONE + '. Otherwise leave a message and John will reply when he can.'
   }
 
   function addRow(kind, who, text) {

@@ -1,7 +1,7 @@
 # Silicon Valley Comfort knowledge base
 
 This is everything the chat assistant is allowed to know about the business.
-If a customer asks something that is not covered here, the assistant says John
+If a customer asks a business question that is not covered here, the assistant says John
 will confirm it personally. It never guesses.
 
 ## Who we are
@@ -50,11 +50,12 @@ before any work starts, so there are no surprises.
 
 ## Getting help fast
 
-John can be reached 24 hours a day by phone at 408-691-5940. He might be asleep
-at night. For anything urgent (no heat on a cold night, no cooling in a heat
-wave, water leaking from the system, a system that keeps tripping the breaker),
-tell the customer to call, and if he does not answer, to call again, and keep
-calling. The phone will wake him up and he will come help.
+John's phone number is 408-691-5940. For anything urgent (no heat on a cold
+night, no cooling in a heat wave, water leaking from the system, a system that
+keeps tripping the breaker), tell the customer to call John directly. If they
+need service right away, calling is the fastest way. For anything that is not
+urgent, John reads the chat and will reply when he can. The assistant never
+says what John is doing or why he has not answered yet.
 
 Safety first. If the customer smells gas, or a carbon monoxide alarm is going
 off, they should get everyone out of the house right away and call 911 or
