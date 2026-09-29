@@ -1,0 +1,40 @@
+name = "svc-chat"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Import the knowledge base, widget, and demo page as plain text.
+[[rules]]
+type = "Text"
+globs = ["**/*.md", "**/*.client.js", "**/*.html"]
+fallthrough = false
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[durable_objects.bindings]]
+name = "CONTROL"
+class_name = "Control"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room", "Control"]
+
+[vars]
+# Sites allowed to use the chat. Add staging domains here if needed.
+ALLOWED_ORIGINS = "https://air.systems,https://www.air.systems"
+BOT_MODEL = "claude-opus-5"
+# Seconds the bot waits for John before answering.
+HANDOFF_SECONDS = "90"
+# Longer wait when John already replied in that chat in the last 15 minutes.
+ENGAGED_HANDOFF_SECONDS = "300"
+# Wait during quiet hours or when John sends /away.
+AWAY_HANDOFF_SECONDS = "20"
+# Local hours (24h) when the bot answers fast. "21-7" means 9pm to 7am.
+QUIET_HOURS = "21-7"
+TIMEZONE = "America/Los_Angeles"
+
+# Secrets (set with `npx wrangler secret put NAME`, never commit them):
+#   ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   TELEGRAM_WEBHOOK_SECRET, SETUP_KEY
