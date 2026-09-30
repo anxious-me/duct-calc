@@ -21,10 +21,24 @@ class_name = "Control"
 tag = "v1"
 new_sqlite_classes = ["Room", "Control"]
 
+# Per-IP rate limits. Best effort (counted per Cloudflare location); the daily
+# budgets in [vars] are the hard stop on cost.
+[[unsafe.bindings]]
+name = "CREATE_LIMIT"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
+
+[[unsafe.bindings]]
+name = "CHAT_LIMIT"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 12, period = 60 }
+
 [vars]
 # Sites allowed to use the chat. Add staging domains here if needed.
 ALLOWED_ORIGINS = "https://air.systems,https://www.air.systems"
-BOT_MODEL = "claude-opus-5"
+BOT_MODEL = "claude-opus-5-5"
 # Seconds the bot waits for John before answering.
 HANDOFF_SECONDS = "90"
 # Longer wait when John already replied in that chat in the last 15 minutes.
@@ -34,6 +48,11 @@ AWAY_HANDOFF_SECONDS = "20"
 # Local hours (24h) when the bot answers fast. "21-7" means 9pm to 7am.
 QUIET_HOURS = "21-7"
 TIMEZONE = "America/Los_Angeles"
+# Hard daily caps, counted per local day. "0" disables a cap.
+BOT_DAILY_BUDGET = "300"
+NEW_CHATS_DAILY_BUDGET = "200"
+# Delete a chat this many days after its last message. "0" keeps chats forever.
+RETENTION_DAYS = "30"
 
 # Secrets (set with `npx wrangler secret put NAME`, never commit them):
 #   ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,

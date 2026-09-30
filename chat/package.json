@@ -1,12 +1,13 @@
 {
   "name": "svc-chat",
-  "version": "1.0.0",
-  "description": "Website chat for air.systems: customers text John, a Claude bot covers when he is busy.",
+  "version": "1.1.0",
+  "description": "Website chat for air.systems: customers text John, a clearly labeled Claude bot covers when he does not answer in time.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc",
-    "check": "tsc && wrangler deploy --dry-run --outdir .wrangler/dry"
+    "check": "tsc && wrangler deploy --dry-run --outdir .wrangler/dry",
+    "smoke": "node test/smoke.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0"
