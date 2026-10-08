@@ -71,7 +71,7 @@ const vars = {
   ENGAGED_HANDOFF_SECONDS: '3',
   AWAY_HANDOFF_SECONDS: '1',
   QUIET_HOURS: '0-0',
-  NEW_CHATS_DAILY_BUDGET: '4',
+  NEW_CHATS_DAILY_BUDGET: '8',
   BOT_DAILY_BUDGET: '100',
 }
 if (await fetch(BASE + '/').then(() => true).catch(() => false)) {
@@ -96,15 +96,22 @@ async function stop(code) {
   process.exit(code)
 }
 
+// On timeout the run stops here and the dev server is shut down, so nothing is left on the port.
 async function waitFor(fn, ms = 10000, label = 'condition') {
   const start = Date.now()
   while (Date.now() - start < ms) {
-    const v = await fn()
+    const v = await Promise.resolve().then(fn).catch(() => null)
     if (v) return v
     await sleep(150)
   }
-  throw new Error(`Timed out waiting for ${label}`)
+  console.log(`FAIL  timed out waiting for ${label}`)
+  console.log('\nwrangler dev log tail:\n' + devLog.slice(-3000))
+  return stop(1)
 }
+process.on('unhandledRejection', async (e) => {
+  console.log('FAIL  ' + (e && e.stack ? e.stack : e))
+  await stop(1)
+})
 
 try {
   await waitFor(() => fetch(BASE + '/').then((r) => r.ok).catch(() => false), 60000, 'wrangler dev')
@@ -127,8 +134,12 @@ async function api(path, init = {}, origin = ORIGIN) {
   try { body = await r.json() } catch { /* not json */ }
   return { status: r.status, body, headers: r.headers }
 }
-const createChat = (page = '/ac-repair') => api('/api/chats', { method: 'POST', body: JSON.stringify({ page }) })
-const say = (id, text) => api(`/api/chats/${id}/messages`, { method: 'POST', body: JSON.stringify({ text }) })
+// Each call looks like a different visitor so the per-IP rate limits only bite where a test wants them to.
+let visitor = 1
+const asVisitor = () => ({ 'cf-connecting-ip': `10.0.${visitor >> 8}.${visitor++ & 255}` })
+const createChat = (page = '/ac-repair', headers = asVisitor()) =>
+  api('/api/chats', { method: 'POST', body: JSON.stringify({ page }), headers })
+const say = (id, text) => api(`/api/chats/${id}/messages`, { method: 'POST', body: JSON.stringify({ text }), headers: asVisitor() })
 const poll = (id, after = 0) => api(`/api/chats/${id}?after=${after}`).then((r) => r.body)
 
 let updateId = 1
@@ -141,6 +152,8 @@ function webhook(message, secret = SECRET) {
 }
 const johnSays = (text, replyToText) => webhook({ text, reply_to_message: { message_id: 1, text: replyToText } })
 const lastSend = () => telegramSends[telegramSends.length - 1]
+// Sends since index `from` that match, so a fast bot copy cannot shadow the notification under test.
+const sendSince = (from, pred) => telegramSends.slice(from).find(pred)
 const waitSends = (n) => waitFor(() => telegramSends.length >= n, 8000, `${n} Telegram sends`)
 const waitBot = (id, after) =>
   waitFor(async () => (await poll(id, after)).messages.find((m) => m.from === 'bot'), 12000, 'a bot reply')
@@ -170,6 +183,19 @@ console.log('\nOrigin and input checks')
   check('setup with the wrong key is 403', setupBad.status === 403, setupBad.status)
   const setupOk = await fetch(BASE + '/setup?key=setup-key').then((r) => r.json())
   check('setup registers the webhook', setupOk.ok === true)
+}
+
+console.log('\nVisitors who never ask anything never ping John')
+{
+  const before = telegramSends.length
+  await fetch(BASE + '/widget.js').then((r) => r.text())
+  await fetch(BASE + '/').then((r) => r.text())
+  const quiet = (await createChat('/')).body.id
+  await poll(quiet)
+  await poll(quiet)
+  await sleep(1500)
+  const extra = telegramSends.slice(before).map((s) => s.text.slice(0, 40))
+  check('page load, a started chat and polling send John nothing', extra.length === 0, extra.join(' | '))
 }
 
 console.log('\nCustomer message reaches John, bot answers after the handoff')
@@ -291,6 +317,22 @@ console.log('\nBot output guards')
   bot = await waitBot(chat, after)
   check('deny list swaps the reply for the safe line', bot.text === SAFE_REPLY, bot.text)
 
+  await waitSends(telegramSends.length)
+  const blockedCopy = sendSince(0, (m) => m.text.startsWith('Bot could not answer this one'))
+  check('a blocked reply alerts John loudly', !!blockedCopy && blockedCopy.disable_notification === false, JSON.stringify(blockedCopy))
+
+  after = (await poll(chat)).messages.length
+  nextReply = { text: "I am John's AI assistant. John reads the chat and will reply when he can.", stop_reason: 'end_turn' }
+  await say(chat, 'Who is this?')
+  bot = await waitBot(chat, after)
+  check("the deny list lets \"I am John's AI assistant\" through", bot.text.startsWith("I am John's AI assistant."), bot.text)
+
+  after = (await poll(chat)).messages.length
+  nextReply = { text: 'I\u2019m John, be right there.', stop_reason: 'end_turn' }
+  await say(chat, 'Hello?')
+  bot = await waitBot(chat, after)
+  check('a curly-quote "I\u2019m John" is still blocked', bot.text === SAFE_REPLY, bot.text)
+
   after = (await poll(chat)).messages.length
   nextReply = { text: '', stop_reason: 'refusal' }
   await say(chat, 'Something odd')
@@ -308,25 +350,35 @@ console.log('\n/status and /away')
   await waitSends(sends + 2)
   const after = (await poll(b)).messages.length
   nextReply = { text: 'Away mode answer.', stop_reason: 'end_turn' }
+  const before = telegramSends.length
   await say(b, 'Hello?')
-  await waitSends(sends + 3)
-  check('away footer shows the short wait', lastSend().text.includes('Bot answers in 1s'), lastSend().text)
+  const note = await waitFor(() => sendSince(before, (m) => m.text.includes('New chat message')), 8000, 'the away notification')
+  check('away footer shows the short wait', note.text.includes('Bot answers in 1s'), note.text)
   const bot = await waitBot(b, after)
   check('bot answers fast in away mode', bot.text === 'Away mode answer.')
+  const beforeBack = telegramSends.length
   await johnSays('/back')
-  await waitSends(sends + 5)
-  check('/back confirms with the normal wait', lastSend().text.includes('waits 2s'), lastSend().text)
+  const back = await waitFor(() => sendSince(beforeBack, (m) => m.text.startsWith('Back.')), 8000, 'the /back reply')
+  check('/back confirms with the normal wait', back.text.includes('waits 2s'), back.text)
 }
 
 console.log('\nNew chat limits')
 {
-  let limited = null
-  for (let i = 0; i < 6 && !limited; i++) {
-    const r = await createChat()
-    if (r.status === 429) limited = r.body.error
+  const sameVisitor = { 'cf-connecting-ip': '10.9.9.9' }
+  let perIp = null
+  for (let i = 0; i < 5 && !perIp; i++) {
+    const r = await createChat('/ac-repair', sameVisitor)
+    if (r.status === 429) perIp = r.body.error
   }
-  check('new chats get rate limited or budget capped', !!limited, 'no 429 after 6 creations')
-  if (limited) console.log('      429 reason: ' + limited)
+  check('one visitor gets rate limited after 3 new chats a minute', !!perIp && perIp.startsWith('Too many new chats'), perIp)
+  let daily = null
+  for (let i = 0; i < 6 && !daily; i++) {
+    const r = await createChat()
+    if (r.status === 429) daily = r.body.error
+  }
+  check('the daily new-chat cap stops everyone once it is spent', !!daily && daily.startsWith('The chat is very busy'), daily)
+  const busy = await say(b, 'Still there?')
+  check('existing chats keep working when the new-chat cap is spent', busy.status === 200, busy.status)
 }
 
 console.log('')

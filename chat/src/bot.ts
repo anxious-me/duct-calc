@@ -42,16 +42,28 @@ const MAX_REPLY_CHARS = 1200
 /** Replies matching any of these never reach the customer. Kept narrow on purpose: see sanitizeReply. */
 const DENY = [
   /\b(lic\.?|licen[cs]e)\s*(#|no\.?|number)?\s*[:#]?\s*\d{5,}/i,
-  /\bC-?20\b/,
+  /\bC-?20\b/i,
   /premier dealer/i,
   /google guaranteed/i,
   /new-school@/i,
   /no fluff/i,
   /\bjohn(\s+is|'s)\s+(busy|asleep|sleeping|tied up|on a (job|call|roof)|out on)/i,
-  /\bI('m| am) john\b/i,
+  // "I'm John" is impersonation; "I'm John's AI assistant" is the truth.
+  /\bI('m| am) john\b(?!'s)/i,
 ]
 
-export async function botReply(env: Env, history: ChatMessage[]): Promise<string> {
+/** What the customer will see, and whether it is a real answer or a canned line. */
+export interface BotResult {
+  text: string
+  /** ok: a real answer. safe: refused or blocked by the filter. error: Claude failed. */
+  kind: 'ok' | 'safe' | 'error'
+}
+
+const SAFE: BotResult = { text: SAFE_REPLY, kind: 'safe' }
+const FAILED: BotResult = { text: FALLBACK_REPLY, kind: 'error' }
+
+/** Null when there is nothing to answer (the customer is not the last to speak). */
+export async function botReply(env: Env, history: ChatMessage[]): Promise<BotResult | null> {
   const messages: Anthropic.Beta.BetaMessageParam[] = []
   for (const m of history.slice(-HISTORY_MESSAGES)) {
     if (m.from === 'customer') {
@@ -70,11 +82,11 @@ export async function botReply(env: Env, history: ChatMessage[]): Promise<string
   }
   // The API wants the conversation to open with the customer.
   while (messages.length && messages[0].role !== 'user') messages.shift()
-  if (!messages.length || messages[messages.length - 1].role !== 'user') return ''
+  if (!messages.length || messages[messages.length - 1].role !== 'user') return null
 
   if (!env.ANTHROPIC_API_KEY) {
     console.error('ANTHROPIC_API_KEY is not set')
-    return FALLBACK_REPLY
+    return FAILED
   }
   // 30s timeout keeps the widget's typing indicator honest; one retry covers a blip.
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, baseURL: env.ANTHROPIC_BASE_URL || undefined, timeout: 30_000, maxRetries: 1 })
@@ -89,15 +101,16 @@ export async function botReply(env: Env, history: ChatMessage[]): Promise<string
       system: [{ type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages,
     })
-    if (response.stop_reason === 'refusal') return SAFE_REPLY
+    if (response.stop_reason === 'refusal') return SAFE
     let text = response.content
       .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
       .map((b) => b.text)
       .join('\n')
       .trim()
-    if (!text) return FALLBACK_REPLY
     if (response.stop_reason === 'max_tokens') text = lastFullSentence(text)
-    return sanitizeReply(text) || FALLBACK_REPLY
+    const clean = sanitizeReply(text)
+    if (clean.blocked) return SAFE
+    return clean.text ? { text: clean.text, kind: 'ok' } : FAILED
   } catch (error) {
     if (error instanceof Anthropic.RateLimitError) {
       console.error('Claude rate limited:', error.message)
@@ -108,7 +121,7 @@ export async function botReply(env: Env, history: ChatMessage[]): Promise<string
     } else {
       console.error('Bot reply failed:', error)
     }
-    return FALLBACK_REPLY
+    return FAILED
   }
 }
 
@@ -122,23 +135,25 @@ function neutralize(text: string): string {
  * owner does not allow, clips long replies, and swaps anything on the deny list for
  * a safe line. Applied to bot output only, never to John's messages.
  */
-export function sanitizeReply(raw: string): string {
+export function sanitizeReply(raw: string): { text: string; blocked: boolean } {
   const text = raw
-    .replace(/\s*[—–]\s*/g, ', ')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s*[\u2014\u2013]\s*/g, ', ')
     .replace(/^[ \t]*[#>]+[ \t]*/gm, '')
-    .replace(/^[ \t]*[*•-][ \t]+/gm, '')
+    .replace(/^[ \t]*[*\u2022-][ \t]+/gm, '')
     .replace(/\*{1,2}([^*\n]*)\*{1,2}/g, '$1')
     .replace(/[*#]/g, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
-  if (!text) return ''
+  if (!text) return { text: '', blocked: false }
   const hit = DENY.find((re) => re.test(text))
   if (hit) {
     console.error('Bot reply blocked by', hit.source, ':', text.slice(0, 200))
-    return SAFE_REPLY
+    return { text: SAFE_REPLY, blocked: true }
   }
-  return text.length > MAX_REPLY_CHARS ? lastFullSentence(text.slice(0, MAX_REPLY_CHARS)) || text.slice(0, MAX_REPLY_CHARS) : text
+  const clipped = text.length > MAX_REPLY_CHARS ? lastFullSentence(text.slice(0, MAX_REPLY_CHARS)) || text.slice(0, MAX_REPLY_CHARS) : text
+  return { text: clipped, blocked: false }
 }
 
 /** Cuts a reply back to its last complete sentence. Empty when there is none. */

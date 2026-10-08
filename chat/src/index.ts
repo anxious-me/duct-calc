@@ -1,6 +1,6 @@
 import widgetSource from './widget.client.js'
 import demoPage from './demo.html'
-import { inQuietHours, num } from './room'
+import { inQuietHours, num, UNKNOWN_CHAT, type BotSwitch } from './room'
 import { roomIdFromReply, sendToJohn, telegramSend, type TelegramUpdate } from './telegram'
 import type { Env, RateLimiter } from './types'
 
@@ -128,7 +128,7 @@ async function routeApi(request: Request, env: Env, url: URL, json: (body: unkno
     if (!text) return json({ error: 'empty message' }, 400)
     const result = await room.fromCustomer(text)
     if (result.ok) return json(result)
-    return json(result, result.error === 'unknown chat' ? 404 : 429)
+    return json(result, result.error === UNKNOWN_CHAT ? 404 : 429)
   }
 
   return json({ error: 'not found' }, 404)
@@ -170,6 +170,13 @@ Send anytime:
 /away  bot answers right away everywhere (sleeping, on a roof, etc.)
 /back  bot waits for you again
 /status  current mode and today's usage`
+
+const SWITCH_REPLY: Record<BotSwitch, string> = {
+  gone: 'That chat no longer exists.',
+  off: 'Bot is off for that chat. All you.',
+  on: 'Bot is back on for that chat.',
+  capped: 'The bot has reached its limit for that chat, so it stays quiet. Reply to answer.',
+}
 
 async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   const msg = update.message
@@ -222,9 +229,8 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   const room = roomStub(env, roomId)
 
   if (command === '/me' || command === '/bot') {
-    const botOff = command === '/me'
-    const ok = await room.setBotOff(botOff)
-    return reply(ok ? (botOff ? 'Bot is off for that chat. All you.' : 'Bot is back on for that chat.') : 'That chat no longer exists.')
+    const result = await room.setBotOff(command === '/me')
+    return reply(SWITCH_REPLY[result])
   }
   // A typo like /mee must never reach the customer as a live reply.
   if (text.startsWith('/')) return reply('Unknown command. Send /help for the list.')

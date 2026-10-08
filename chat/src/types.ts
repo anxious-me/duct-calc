@@ -55,4 +55,6 @@ export interface RoomMeta {
   lastActivityAt?: number
   /** When the bot should answer if John has not by then. Null when nothing is pending. */
   handoffAt?: number | null
+  /** Failed attempts at the current handoff, so a crash mid-reply is retried a bounded number of times. */
+  handoffTries?: number
 }
