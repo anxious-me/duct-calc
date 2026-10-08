@@ -4,12 +4,15 @@ export interface TelegramMessage {
   message_id: number
   chat: { id: number }
   text?: string
+  /** Text sent with a photo or file. */
+  caption?: string
   reply_to_message?: { message_id: number; text?: string }
 }
 
 export interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
+  edited_message?: TelegramMessage
 }
 
 const MAX_LEN = 4000
@@ -37,6 +40,9 @@ export async function telegramSend(env: Env, chatId: string, text: string, silen
 
 export const sendToJohn = (env: Env, text: string, silent = false) =>
   telegramSend(env, env.TELEGRAM_CHAT_ID ?? '', text, silent)
+
+/** A short label so John can tell chats apart at a glance. */
+export const chatTag = (roomId: string) => roomId.slice(0, 4)
 
 // Every chat notification ends with this line so John's replies can be routed back.
 export const refLine = (roomId: string) => `ref: ${roomId}`

@@ -1,6 +1,6 @@
 import widgetSource from './widget.client.js'
 import demoPage from './demo.html'
-import { inQuietHours, num, UNKNOWN_CHAT, type BotSwitch } from './room'
+import { num, UNKNOWN_CHAT, waitText, type BotSwitch } from './room'
 import { roomIdFromReply, sendToJohn, telegramSend, type TelegramUpdate } from './telegram'
 import type { Env, RateLimiter } from './types'
 
@@ -139,7 +139,7 @@ function allowedOrigin(env: Env, origin: string, self: string): boolean {
   if (origin === self) return true
   return (env.ALLOWED_ORIGINS || '')
     .split(',')
-    .map((o) => o.trim())
+    .map((o) => o.trim().replace(/\/+$/, ''))
     .filter(Boolean)
     .includes(origin)
 }
@@ -157,19 +157,26 @@ async function limited(limiter: RateLimiter | undefined, key: string): Promise<b
 
 // ---------- Telegram (John's side) ----------
 
-const HELP = `How this works:
-Every website chat message lands here. Swipe left on it (or long press and tap Reply) and type your answer. It shows up on the website as "John (live reply)".
+function help(env: Env): string {
+  return `How this works:
+The AI assistant answers website chats right away. You get a silent copy of every answer here, so your phone stays quiet.
 
-If you don't reply in time, the bot answers, clearly labeled as a bot, and copies you here.
+Your phone rings when:
+• a customer asks to talk to you (reply within ${waitText(env)}, or the bot tells them you are not available)
+• the bot cannot answer something
+• a customer writes in a chat you are in (you replied in the last 15 minutes)
+
+To answer, swipe left on any chat message (or long press and tap Reply) and type. It shows on the website as "John (live reply)". Only text goes through, and editing a sent reply does not change the website.
 
 Reply to a chat with:
 /me  bot stays quiet in that chat, it's all you
 /bot  let the bot help again in that chat
 
 Send anytime:
-/away  bot answers right away everywhere (sleeping, on a roof, etc.)
-/back  bot waits for you again
+/away  you are unavailable: customers who ask for you are told so right away, and nothing rings
+/back  customers who ask for you ring your phone again
 /status  current mode and today's usage`
+}
 
 const SWITCH_REPLY: Record<BotSwitch, string> = {
   gone: 'That chat no longer exists.',
@@ -179,10 +186,25 @@ const SWITCH_REPLY: Record<BotSwitch, string> = {
 }
 
 async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
+  if (update.edited_message) {
+    if (env.TELEGRAM_CHAT_ID && String(update.edited_message.chat.id) === env.TELEGRAM_CHAT_ID) {
+      await sendToJohn(env, 'Edits do not reach the website. Send a new reply instead.')
+    }
+    return
+  }
   const msg = update.message
-  if (!msg?.text) return
-  const text = msg.text.trim()
+  if (!msg) return
   const chatId = String(msg.chat.id)
+  const raw = msg.text ?? msg.caption
+  if (!raw) {
+    // A photo, voice note or sticker sent as a reply would otherwise vanish without a word.
+    if (chatId === env.TELEGRAM_CHAT_ID && msg.reply_to_message) {
+      await telegramSend(env, chatId, 'Only text goes through to the website chat. Photos, voice notes and stickers are not sent. Please type your answer.')
+    }
+    return
+  }
+  const text = raw.trim()
+  const captionOnly = msg.text === undefined
 
   if (chatId !== env.TELEGRAM_CHAT_ID) {
     // Lets John grab his chat id during setup. Strangers get nothing useful.
@@ -195,30 +217,25 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   const ctl = control(env)
   const reply = (t: string) => telegramSend(env, chatId, t)
   const command = text.split(/\s+/)[0].toLowerCase().replace(/@.*$/, '')
-  const handoff = num(env.HANDOFF_SECONDS, 90)
-  const engaged = num(env.ENGAGED_HANDOFF_SECONDS, 300)
-  const away = num(env.AWAY_HANDOFF_SECONDS, 20)
 
   if (command === '/away') {
     await ctl.setAway(true)
-    return reply('Away mode on. The bot answers website chats right away. You still get every message here. Send /back when you are up.')
+    return reply('Away mode on. Customers who ask for you are told you are not available, and your phone will not ring for them. Send /back when you are around.')
   }
   if (command === '/back') {
     await ctl.setAway(false)
-    return reply(`Back. The bot waits ${handoff}s for you before answering.`)
+    return reply(`Back. Customers who ask for you ring your phone again, and you have ${waitText(env)} to answer.`)
   }
   if (command === '/status') {
     const [isAway, usage] = await Promise.all([ctl.isAway(), ctl.usage()])
     const mode = isAway
-      ? 'Away mode is on. The bot answers right away.'
-      : inQuietHours(env)
-        ? `Quiet hours (${env.QUIET_HOURS}). The bot answers after ${away}s, but waits ${engaged}s in any chat you replied to in the last 15 minutes.`
-        : `You are on. The bot waits ${handoff}s, or ${engaged}s in any chat you replied to in the last 15 minutes.`
+      ? 'Away mode is on. Customers who ask for you are told you are not available.'
+      : `You are on. Customers who ask for you ring your phone, and you have ${waitText(env)} to answer before the bot tells them you are not available.`
     return reply(
       `${mode}\nToday: ${usage.rooms} new chats, ${usage.bot} bot replies (daily caps ${num(env.NEW_CHATS_DAILY_BUDGET, 200)} and ${num(env.BOT_DAILY_BUDGET, 300)}).`,
     )
   }
-  if (command === '/start' || command === '/help') return reply(HELP)
+  if (command === '/start' || command === '/help') return reply(help(env))
 
   const roomId = roomIdFromReply(msg)
   if (!roomId) {
@@ -236,7 +253,8 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   if (text.startsWith('/')) return reply('Unknown command. Send /help for the list.')
 
   const ok = await room.fromJohn(text.slice(0, MAX_TEXT))
-  if (!ok) await reply('That chat no longer exists.')
+  if (!ok) return reply('That chat no longer exists.')
+  if (captionOnly) await reply('Sent your caption as text. The photo or file itself does not go to the website chat.')
 }
 
 /** One-time: point Telegram at this worker. Visit /setup?key=YOUR_SETUP_KEY */
@@ -247,6 +265,9 @@ async function setup(env: Env, url: URL): Promise<Response> {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) {
     return new Response('Set the TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET secrets first.', { status: 500 })
   }
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(env.TELEGRAM_WEBHOOK_SECRET)) {
+    return new Response('TELEGRAM_WEBHOOK_SECRET may only use A-Z, a-z, 0-9, _ and -, up to 256 characters.', { status: 500 })
+  }
   const base = env.TELEGRAM_API_BASE || 'https://api.telegram.org'
   const res = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
     method: 'POST',
@@ -254,9 +275,29 @@ async function setup(env: Env, url: URL): Promise<Response> {
     body: JSON.stringify({
       url: `${url.origin}/telegram`,
       secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-      allowed_updates: ['message'],
+      allowed_updates: ['message', 'edited_message'],
     }),
   })
+  // The command menu is a nicety. It must never fail setup.
+  try {
+    await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(env.TELEGRAM_CHAT_ID ? { scope: { type: 'chat', chat_id: env.TELEGRAM_CHAT_ID } } : {}),
+        commands: [
+          { command: 'me', description: 'Reply to a chat: bot stays quiet there' },
+          { command: 'bot', description: 'Reply to a chat: let the bot help again' },
+          { command: 'away', description: 'You are unavailable, nothing rings' },
+          { command: 'back', description: 'Customers who ask for you ring again' },
+          { command: 'status', description: "Current mode and today's usage" },
+          { command: 'help', description: 'How this works' },
+        ],
+      }),
+    })
+  } catch (error) {
+    console.error('setMyCommands', error)
+  }
   return new Response(await res.text(), { headers: { 'content-type': 'application/json' } })
 }
 

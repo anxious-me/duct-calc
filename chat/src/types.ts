@@ -21,9 +21,10 @@ export interface Env {
   // Vars (see wrangler.toml)
   ALLOWED_ORIGINS?: string
   BOT_MODEL?: string
-  HANDOFF_SECONDS?: string
+  BOT_REPLY_SECONDS?: string
+  TRANSFER_WAIT_SECONDS?: string
   ENGAGED_HANDOFF_SECONDS?: string
-  AWAY_HANDOFF_SECONDS?: string
+  RING_ON_FIRST_QUESTION?: string
   QUIET_HOURS?: string
   TIMEZONE?: string
   BOT_DAILY_BUDGET?: string
@@ -42,6 +43,8 @@ export interface ChatMessage {
   from: Sender
   text: string
   ts: number
+  /** A line the system posts on its own (John is not available), not an answer to anything. The bot looks past it. */
+  sys?: boolean
 }
 
 export interface RoomMeta {
@@ -57,4 +60,10 @@ export interface RoomMeta {
   handoffAt?: number | null
   /** Failed attempts at the current handoff, so a crash mid-reply is retried a bounded number of times. */
   handoffTries?: number
+  /** While John's phone is ringing for this chat: when the bot gives up on him and says he is not available. */
+  transferUntil?: number | null
+  /** How many times this chat has rung John's phone. Bounded so one chat cannot ring it all night. */
+  transfers?: number
+  /** Set once the bot has told the customer John is not available. */
+  unavailableAt?: number
 }

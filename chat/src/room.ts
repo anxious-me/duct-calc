@@ -1,15 +1,17 @@
 import { DurableObject } from 'cloudflare:workers'
 import { botReply } from './bot'
-import { looksUrgent, scrubRef, sendToJohn, withRef } from './telegram'
+import { chatTag, looksUrgent, scrubRef, sendToJohn, withRef } from './telegram'
 import type { ChatMessage, Env, RoomMeta, Sender } from './types'
 
 const MAX_CUSTOMER_MESSAGES = 60
 const MAX_BOT_REPLIES = 25
 const MAX_HANDOFF_TRIES = 3
+/** How many times one chat can ring John's phone, so a pushy visitor cannot ring it all night. */
+const MAX_TRANSFERS = 3
 const ENGAGED_WINDOW_MS = 15 * 60 * 1000
 const RESUME_BOT_DELAY_MS = 5000
-const CAP_NOTE =
-  ' I have reached my limit for this chat. John reads the chat and will reply when he can. For anything urgent call 408-691-5940.'
+const PHONE = '408-691-5940'
+const CAP_NOTE = ` That is all I can answer in this chat, so from here your messages go straight to John. If it can't wait, call or text ${PHONE}.`
 
 export const UNKNOWN_CHAT = 'unknown chat'
 export const CHAT_FULL_MESSAGE =
@@ -17,6 +19,28 @@ export const CHAT_FULL_MESSAGE =
 
 /** What /me or /bot did to a chat. */
 export type BotSwitch = 'gone' | 'off' | 'on' | 'capped'
+
+/** Why the bot is getting John: the customer asked, the reply was blocked, or Claude failed. */
+type Why = 'asked' | 'safe' | 'error'
+/** What happened when it tried. */
+type Outcome = 'ringing' | 'pending' | 'unavailable' | 'enough'
+
+/**
+ * The customer-facing lines around getting John. Written here, not by the model, so they
+ * are always true: the bot only says John's phone rang when it did, and only says he is
+ * not available when he was asked and did not pick up (or sent /away).
+ */
+function johnLine(why: Why | null, outcome: Outcome, night: boolean): string {
+  const lead =
+    why === 'safe' ? "I can't answer that one here. " : why === 'error' ? 'Sorry, the AI assistant is having trouble right now. ' : ''
+  const middle = {
+    ringing: "I just sent this chat to John's phone. If he's available he'll answer right here.",
+    pending: "John's phone already has this chat. If he's available he'll answer right here.",
+    unavailable: `${night ? "It's after hours and John is probably asleep, so he isn't" : "John isn't"} available right now. Leave your name, phone number, and what's going on, and he'll get back to you as soon as he can.`,
+    enough: 'John already has this chat and will see everything here.',
+  }[outcome]
+  return `${lead}${middle} If it can't wait, call or text him at ${PHONE}.`
+}
 
 /** One Durable Object per website visitor conversation. */
 export class Room extends DurableObject<Env> {
@@ -62,13 +86,21 @@ export class Room extends DurableObject<Env> {
    * Every meta write that can change timing goes through here, so the single alarm
    * always matches what is stored. Rooms from before retention existed get their
    * activity clock started on the first write instead of being judged by createdAt.
+   * When msgs is given it is written in the same atomic put, so a bot line and the
+   * state change that goes with it can never come apart.
    */
-  private async saveMeta(meta: RoomMeta): Promise<void> {
+  private async saveMeta(meta: RoomMeta, msgs?: ChatMessage[]): Promise<void> {
     const m = meta.lastActivityAt ? meta : { ...meta, lastActivityAt: Date.now() }
-    await this.ctx.storage.put('meta', m)
+    await this.ctx.storage.put<RoomMeta | ChatMessage[]>(msgs ? { meta: m, msgs } : { meta: m })
     await this.rearm(m)
   }
 
+  /**
+   * A customer message. While the bot is handling the chat John's phone stays quiet:
+   * the bot answers right away and John gets a silent copy. His phone only rings when
+   * he is in the conversation (he replied in the last 15 minutes, or sent /me), when
+   * nobody else can answer, or when the customer asks for him (see getJohn).
+   */
   async fromCustomer(text: string): Promise<{ ok: boolean; error?: string }> {
     const { meta, msgs } = await this.load()
     if (!meta) return { ok: false, error: UNKNOWN_CHAT }
@@ -83,14 +115,17 @@ export class Room extends DurableObject<Env> {
     // The retention alarm deleted the chat in that window. The widget starts a new one on 404.
     if (!current) return { ok: false, error: UNKNOWN_CHAT }
 
+    const now = Date.now()
     const capped = current.botReplies >= MAX_BOT_REPLIES
-    const delay = current.botOff || capped || status.botSpent ? null : this.handoffDelay(current, status.away)
+    const canBot = !current.botOff && !capped && !status.botSpent
+    // /away means John is not around, so even a chat he was in goes back to the bot.
+    const live = !status.away && (current.botOff || now - current.johnLastAt < ENGAGED_WINDOW_MS)
+    const delay = !canBot ? null : live ? num(this.env.ENGAGED_HANDOFF_SECONDS, 300) : num(this.env.BOT_REPLY_SECONDS, 2)
     // Commit the handoff before talking to Telegram. If Telegram is down the
     // customer still gets the bot, which is the whole point of the bot.
-    const now = Date.now()
     await this.saveMeta({ ...current, lastActivityAt: now, handoffAt: delay === null ? null : now + delay * 1000, handoffTries: 0 })
 
-    const header = looksUrgent(text) ? 'NEW CHAT MESSAGE (might be urgent)' : 'New chat message'
+    if (!live && canBot) return { ok: true }
     const footer = current.botOff
       ? 'Bot is off for this chat. Reply to answer.'
       : capped
@@ -100,7 +135,7 @@ export class Room extends DurableObject<Env> {
           : `Bot answers in ${delay}s unless you reply first. Swipe to reply.`
     await sendToJohn(
       this.env,
-      withRef(`${header}\nCustomer: ${scrubRef(text)}${current.page ? `\nPage: ${current.page}` : ''}\n\n${footer}`, current.roomId),
+      withRef(`${header(current, text)}${live ? ' (you are in this chat)' : ''}\nCustomer: ${scrubRef(text)}${pageLine(current)}\n\n${footer}`, current.roomId),
     )
     return { ok: true }
   }
@@ -110,7 +145,8 @@ export class Room extends DurableObject<Env> {
     if (!meta) return false
     await this.append('john', text)
     const now = Date.now()
-    await this.saveMeta({ ...meta, johnLastAt: now, lastActivityAt: now, handoffAt: null, handoffTries: 0 })
+    // John picked up, so a pending "not available" line must never fire.
+    await this.saveMeta({ ...meta, johnLastAt: now, lastActivityAt: now, handoffAt: null, handoffTries: 0, transferUntil: null })
     return true
   }
 
@@ -120,29 +156,20 @@ export class Room extends DurableObject<Env> {
     const capped = meta.botReplies >= MAX_BOT_REPLIES
     let handoffAt = botOff ? null : (meta.handoffAt ?? null)
     // Turning the bot back on while a customer is waiting: answer them shortly.
-    if (!botOff && !capped && handoffAt === null && msgs[msgs.length - 1]?.from === 'customer') {
+    if (!botOff && !capped && handoffAt === null && lastSpeaker(msgs) === 'customer') {
       handoffAt = Date.now() + RESUME_BOT_DELAY_MS
     }
-    await this.saveMeta({ ...meta, botOff, handoffAt, handoffTries: 0 })
+    // /me means John owns the chat, so the bot will not tell anyone he is unavailable.
+    const transferUntil = botOff ? null : (meta.transferUntil ?? null)
+    await this.saveMeta({ ...meta, botOff, handoffAt, handoffTries: 0, transferUntil })
     return botOff ? 'off' : capped ? 'capped' : 'on'
   }
 
-  /**
-   * How long the bot waits for John before answering. /away wins because John sent
-   * it on purpose. A reply from John in the last 15 minutes proves he is up, so the
-   * engaged window beats quiet hours.
-   */
-  private handoffDelay(meta: RoomMeta, away: boolean): number {
-    if (away) return num(this.env.AWAY_HANDOFF_SECONDS, 20)
-    if (Date.now() - meta.johnLastAt < ENGAGED_WINDOW_MS) return num(this.env.ENGAGED_HANDOFF_SECONDS, 300)
-    if (inQuietHours(this.env)) return num(this.env.AWAY_HANDOFF_SECONDS, 20)
-    return num(this.env.HANDOFF_SECONDS, 90)
-  }
-
-  /** A Durable Object has one alarm, so it is set to the earlier of the bot handoff and the retention expiry. */
+  /** A Durable Object has one alarm, so it is set to the earliest of the bot handoff, the transfer deadline and the retention expiry. */
   private async rearm(meta: RoomMeta): Promise<void> {
     const times: number[] = []
     if (typeof meta.handoffAt === 'number') times.push(meta.handoffAt)
+    if (typeof meta.transferUntil === 'number') times.push(meta.transferUntil)
     const retention = retentionMs(this.env)
     if (retention > 0) times.push((meta.lastActivityAt ?? Date.now()) + retention)
     if (times.length) await this.ctx.storage.setAlarm(Math.min(...times))
@@ -150,17 +177,30 @@ export class Room extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    const { meta, msgs } = await this.load()
+    let { meta, msgs } = await this.load()
     if (!meta) return
     const now = Date.now()
 
+    if (typeof meta.transferUntil === 'number' && meta.transferUntil <= now + 1000) {
+      await this.transferTimedOut(meta)
+      ;({ meta, msgs } = await this.load())
+      if (!meta) return
+    }
+
     // Rooms from before handoffAt existed had an alarm that only meant "bot, answer".
-    const legacy = meta.handoffAt === undefined && msgs[msgs.length - 1]?.from === 'customer'
+    const legacy = meta.handoffAt === undefined && lastSpeaker(msgs) === 'customer'
     if (legacy || (typeof meta.handoffAt === 'number' && meta.handoffAt <= now + 1000)) {
       const tries = (meta.handoffTries ?? 0) + 1
       if (tries > MAX_HANDOFF_TRIES) {
         console.error('Bot handoff failed repeatedly, leaving the chat for John')
         await this.ctx.storage.put('meta', { ...meta, handoffAt: null, handoffTries: 0 })
+        // Loud: the customer is waiting and nobody has answered.
+        if (lastSpeaker(msgs) === 'customer' && !meta.botOff) {
+          await sendToJohn(
+            this.env,
+            withRef(`${header(meta)}: the bot could not answer after several tries, so the customer has no reply yet.\n\n${transcript(msgs)}\n\nReply to answer them.`, meta.roomId),
+          )
+        }
       } else {
         // Count the attempt before doing anything that can fail. If this run dies
         // (an error, a deploy, an eviction mid-reply) the alarm is retried and the
@@ -187,6 +227,24 @@ export class Room extends DurableObject<Env> {
     await this.rearm(fresh)
   }
 
+  /** John's phone rang and he did not reply in time: tell the customer, plainly, that he is not available. */
+  private async transferTimedOut(due: RoomMeta): Promise<void> {
+    const { meta, msgs } = await this.load()
+    if (!meta || meta.transferUntil !== due.transferUntil) return
+    const line = johnLine(null, 'unavailable', inQuietHours(this.env))
+    const now = Date.now()
+    // A customer may have just asked something. The line is marked sys so the bot still answers them.
+    await this.saveMeta({ ...meta, transferUntil: null, unavailableAt: now }, [...msgs, { n: msgs.length + 1, from: 'bot', text: line, ts: now, sys: true }])
+    await sendToJohn(
+      this.env,
+      withRef(
+        `${header(meta)}: you did not reply within ${waitText(this.env)}, so the bot told the customer you are not available. Reply anytime to pick it back up.`,
+        meta.roomId,
+      ),
+      true,
+    )
+  }
+
   /**
    * Answers the waiting customer as the bot. The handoff is only marked done when it
    * is consumed here. If someone else changed it meanwhile (John replied, the
@@ -199,9 +257,13 @@ export class Room extends DurableObject<Env> {
       if (m && m.handoffAt === due) await this.saveMeta({ ...m, handoffAt: null, handoffTries: 0 })
     }
 
-    if (meta.botOff || meta.botReplies >= MAX_BOT_REPLIES || msgs[msgs.length - 1]?.from !== 'customer') return consume()
+    if (meta.botOff || meta.botReplies >= MAX_BOT_REPLIES || lastSpeaker(msgs) !== 'customer') return consume()
     if (!(await this.control().takeBotCall(num(this.env.BOT_DAILY_BUDGET, 300)))) {
       console.error('Daily bot budget reached, leaving the chat for John')
+      await sendToJohn(
+        this.env,
+        withRef(`${header(meta)}: the bot hit its daily budget before it could answer, so the customer has no reply yet.\n\n${transcript(msgs)}\n\nReply to answer them.`, meta.roomId),
+      )
       return consume()
     }
 
@@ -209,7 +271,7 @@ export class Room extends DurableObject<Env> {
     this.botRunning = true
     let result: Awaited<ReturnType<typeof botReply>>
     try {
-      result = await botReply(this.env, msgs)
+      result = await botReply(this.env, msgs, this.statusFor(meta))
     } finally {
       this.botRunning = false
     }
@@ -219,33 +281,141 @@ export class Room extends DurableObject<Env> {
     if (
       !result ||
       latest.meta.botOff ||
-      latest.msgs[latest.msgs.length - 1]?.from !== 'customer' ||
-      latest.msgs.length > answeredUpTo
+      lastSpeaker(latest.msgs) !== 'customer' ||
+      // Something new from the customer or John means this answer is stale. A system line does not.
+      latest.msgs.slice(answeredUpTo).some((m) => !m.sys)
     ) {
       return consume()
     }
 
-    // Only real answers count toward the per-chat cap. Canned lines do not.
-    const real = result.kind === 'ok'
-    const botReplies = latest.meta.botReplies + (real ? 1 : 0)
-    const text = real && botReplies >= MAX_BOT_REPLIES ? result.text + CAP_NOTE : result.text
-    await this.append('bot', text)
-    await this.saveMeta({ ...latest.meta, botReplies, handoffAt: null, handoffTries: 0 })
-
-    if (real) {
-      await sendToJohn(
-        this.env,
-        withRef(`Bot replied:\n${text.slice(0, 3000)}\n\nReply to jump in, or reply /me to turn the bot off for this chat.`, latest.meta.roomId),
-        true,
-      )
-    } else {
-      // Loud on purpose: nobody has really answered this customer yet.
-      await sendToJohn(
-        this.env,
-        withRef(`Bot could not answer this one, so the customer saw:\n${text}\n\nReply to answer them.`, latest.meta.roomId),
-      )
+    if (result.kind !== 'ok') {
+      return this.getJohn(latest.meta, latest.msgs, result.kind === 'transfer' ? 'asked' : result.kind, result.kind === 'transfer' ? result.reason : '')
     }
+
+    // Only real answers count toward the per-chat cap. Canned lines do not.
+    const botReplies = latest.meta.botReplies + 1
+    const text = botReplies >= MAX_BOT_REPLIES ? result.text + CAP_NOTE : result.text
+    const asked = waitingCustomer(latest.msgs)
+    const firstQuestion = latest.meta.botReplies === 0 && latest.meta.johnLastAt === 0 && !latest.meta.transfers
+    const now = Date.now()
+    await this.saveMeta({ ...latest.meta, botReplies, handoffAt: null, handoffTries: 0 }, [
+      ...latest.msgs,
+      { n: latest.msgs.length + 1, from: 'bot', text, ts: now },
+    ])
+    // Silent unless John asked to hear about every new customer.
+    const ring = firstQuestion && this.env.RING_ON_FIRST_QUESTION === 'true'
+    await sendToJohn(
+      this.env,
+      withRef(
+        `${header(latest.meta, asked.join(' '))}${pageLine(latest.meta)}\n${asked.map((t) => `Customer: ${scrubRef(t)}`).join('\n')}\nBot: ${text.slice(0, 2000)}\n\nReply to jump in, or reply /me to turn the bot off for this chat.`,
+        latest.meta.roomId,
+      ),
+      !ring,
+    )
   }
+
+  /**
+   * Gets John for the customer: rings his phone once and gives him TRANSFER_WAIT_SECONDS
+   * to reply in the chat. If he does not, transferTimedOut tells the customer he is not
+   * available. /away skips the ring and says so right away. Used when the customer asks
+   * for John and when the bot could not answer, so nobody is ever left talking to a wall.
+   */
+  private async getJohn(meta: RoomMeta, msgs: ChatMessage[], why: Why, reason: string): Promise<void> {
+    const now = Date.now()
+    const away = await this.control().isAway()
+    const transfers = meta.transfers ?? 0
+    const outcome: Outcome =
+      typeof meta.transferUntil === 'number' ? 'pending' : away ? 'unavailable' : transfers >= MAX_TRANSFERS ? 'enough' : 'ringing'
+    const line = johnLine(why, outcome, inQuietHours(this.env))
+    const next: RoomMeta = {
+      ...meta,
+      handoffAt: null,
+      handoffTries: 0,
+      transfers: outcome === 'ringing' || outcome === 'unavailable' ? transfers + 1 : transfers,
+      transferUntil: outcome === 'ringing' ? now + num(this.env.TRANSFER_WAIT_SECONDS, 180) * 1000 : (meta.transferUntil ?? null),
+      unavailableAt: outcome === 'unavailable' ? now : meta.unavailableAt,
+    }
+    await this.saveMeta(next, [...msgs, { n: msgs.length + 1, from: 'bot', text: line, ts: now }])
+
+    const what =
+      why === 'asked' ? 'the customer wants to talk to you' : why === 'safe' ? 'the bot could not answer this one' : 'the bot is having trouble (Claude error)'
+    const needs = reason ? `\nNeeds: ${scrubRef(reason)}` : ''
+    const recent = `${pageLine(meta)}\n\n${transcript(msgs)}`
+    if (outcome === 'ringing') {
+      await sendToJohn(
+        this.env,
+        withRef(
+          `${what.toUpperCase()} (chat ${chatTag(meta.roomId)})${needs}${recent}\n\nReply to this message to talk to them here. If you do not reply within ${waitText(this.env)}, the bot tells them you are not available.`,
+          meta.roomId,
+        ),
+      )
+      return
+    }
+    const told =
+      outcome === 'unavailable'
+        ? 'Away mode is on, so the bot told them you are not available.'
+        : outcome === 'pending'
+          ? 'Your phone already rang for this chat.'
+          : 'This chat already rang your phone the most times allowed, so it did not ring again.'
+    await sendToJohn(this.env, withRef(`${header(meta)}: ${what}. ${told}${needs}${recent}\n\nReply to answer them.`, meta.roomId), true)
+  }
+
+  /** What the model needs to know about this chat right now, so it does not offer what already happened. */
+  private statusFor(meta: RoomMeta): string {
+    const now = Date.now()
+    const lines: string[] = []
+    const transfers = meta.transfers ?? 0
+    if (typeof meta.transferUntil === 'number') {
+      lines.push(
+        "John's phone was just rung for this chat and he has not answered yet. Do not call transfer_to_john. If they ask, say John has been notified and will answer here if he is available.",
+      )
+    } else if (transfers >= MAX_TRANSFERS) {
+      lines.push(`John has already been notified about this chat. Do not call transfer_to_john again. Give them ${PHONE} and collect their details for him.`)
+    } else if (meta.unavailableAt) {
+      lines.push('John was not available earlier in this chat. Collect their details for him. If they still want John, you may try transfer_to_john once more.')
+    }
+    if (meta.johnLastAt && now - meta.johnLastAt < ENGAGED_WINDOW_MS) {
+      lines.push('John replied in this chat in the last 15 minutes but has not answered the latest message.')
+    }
+    return lines.join(' ')
+  }
+}
+
+function header(meta: RoomMeta, text = ''): string {
+  return `Chat ${chatTag(meta.roomId)}${text && looksUrgent(text) ? ' (might be urgent)' : ''}`
+}
+
+const pageLine = (meta: RoomMeta) => (meta.page ? `\nPage: ${meta.page}` : '')
+
+export function waitText(env: Env): string {
+  const s = num(env.TRANSFER_WAIT_SECONDS, 180)
+  return s % 60 === 0 ? `${s / 60} min` : `${s}s`
+}
+
+/** Who spoke last, ignoring lines the system posted on its own. */
+function lastSpeaker(msgs: ChatMessage[]): Sender | undefined {
+  for (let i = msgs.length - 1; i >= 0; i--) if (!msgs[i].sys) return msgs[i].from
+  return undefined
+}
+
+/** The customer's messages since anyone last answered them. */
+function waitingCustomer(msgs: ChatMessage[]): string[] {
+  const real = msgs.filter((m) => !m.sys)
+  let i = real.length
+  while (i > 0 && real[i - 1].from === 'customer') i--
+  return real.slice(i).map((m) => m.text)
+}
+
+/** The last few messages, for John to catch up at a glance. */
+function transcript(msgs: ChatMessage[], count = 6): string {
+  return msgs
+    .slice(-count)
+    .map((m) => {
+      const who = m.from === 'customer' ? 'Customer' : m.from === 'john' ? 'You' : 'Bot'
+      const text = scrubRef(m.text)
+      return `${who}: ${text.length > 500 ? `${text.slice(0, 500)}...` : text}`
+    })
+    .join('\n')
 }
 
 /** Global switches and daily counters John controls from Telegram. */

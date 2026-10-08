@@ -80,6 +80,7 @@
     '.msg{padding:10px 13px;border-radius:16px;font-size:15px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word}' +
     '.row.them .msg{background:#fff;border:1px solid #e3e7ec;border-bottom-left-radius:4px}' +
     '.row.me .msg{background:var(--svc-accent,#0f62fe);color:#fff;border-bottom-right-radius:4px}' +
+    '.msg a{color:inherit;font-weight:600;text-decoration:underline}' +
     '.row.note .msg{background:#fff4e5;border-color:#f5c98a;color:#5a3d00}' +
     '.typing{font-size:12.5px;color:#5b6472;padding:0 16px 6px;background:#f5f7fa;min-height:22px;visibility:hidden}' +
     '.typing.on{visibility:visible}' +
@@ -133,8 +134,10 @@
   teaser.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true) }
   })
-  $('.close').addEventListener('click', function () { setOpen(false) })
+  var closeBtn = $('.close')
+  closeBtn.addEventListener('click', function () { setOpen(false) })
   newBtn.addEventListener('click', function () {
+    if (sending) return
     resetChat()
     notice('New chat started.')
     if (wide()) input.focus()
@@ -163,7 +166,7 @@
     if (state.id && !state.lastActivity) { state.lastActivity = Date.now(); save() }
     var restore = false
     try { restore = !!sessionStorage.getItem(OPEN_KEY) } catch (e) { /* ignore */ }
-    if (restore && state.id && wide()) setOpen(true)
+    if (restore && state.id && wide()) setOpen(true, true)
     else { render(false); pollNow() }
     if (state.id) checkStale()
     else setTimeout(function () { if (!open && !state.id) teaser.style.display = 'block' }, 8000)
@@ -171,7 +174,8 @@
   if (document.body) mount()
   else document.addEventListener('DOMContentLoaded', mount)
 
-  function setOpen(value) {
+  // restoring: reopened after a page load, so leave the visitor's focus where it is.
+  function setOpen(value, restoring) {
     open = value
     panel.classList.toggle('open', open)
     bubble.setAttribute('aria-expanded', String(open))
@@ -182,7 +186,9 @@
       state.unread = 0
       save()
       render(true)
-      if (wide()) setTimeout(function () { input.focus() }, 50)
+      // On a phone the bubble hides behind the full-screen panel, so focus moves to the
+      // close button instead of falling to the page (and no keyboard pops up).
+      if (!restoring) setTimeout(function () { (wide() ? input : closeBtn).focus() }, 50)
       pollNow()
     } else {
       bubble.focus()
@@ -229,7 +235,7 @@
   }
 
   function greeting() {
-    return 'Hi, I am the Silicon Valley Comfort AI assistant, not John. Your messages go to John, who reads the chat and will reply when he can. If he has not answered yet, I will jump in to answer HVAC questions and take your details for him. Need service right now? Call John at ' + PHONE + '.'
+    return 'Hi, I am the Silicon Valley Comfort AI assistant, not John. Ask me anything about heating and cooling. Want John himself? Just ask and I will ring his phone. Need service right now? Call John at ' + PHONE + '.'
   }
 
   function addRow(kind, who, text, ts) {
@@ -243,10 +249,28 @@
     }
     var msg = document.createElement('div')
     msg.className = 'msg'
-    msg.textContent = text
+    if (kind === 'me') msg.textContent = text
+    else fillText(msg, text)
     if (ts && kind !== 'me') msg.title = formatTime(ts)
     row.appendChild(msg)
     list.appendChild(row)
+  }
+
+  // Phone numbers become tap-to-call links, so "call John" is one tap on a phone.
+  // The regex lives inside: rows can render during mount, before later var lines have run.
+  function fillText(el, text) {
+    var phone = /\(?\b\d{3}\)?[-. ]?\d{3}[-. ]\d{4}\b/g
+    var last = 0
+    var m
+    while ((m = phone.exec(text))) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)))
+      var a = document.createElement('a')
+      a.href = 'tel:+1' + m[0].replace(/\D/g, '')
+      a.textContent = m[0]
+      el.appendChild(a)
+      last = m.index + m[0].length
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)))
   }
 
   // A one-off line in the chat (errors, chat ended). Not stored.
@@ -285,7 +309,7 @@
       var parsed = type.indexOf('application/json') === 0 ? r.json() : Promise.resolve({})
       return parsed.then(function (body) {
         if (!r.ok) {
-          var err = new Error(body.error || 'Request failed')
+          var err = new Error(body.error || 'Something went wrong. Please try again, or call ' + PHONE + '.')
           err.status = r.status
           throw err
         }
@@ -356,9 +380,9 @@
     var id = state.id
     return api('/api/chats/' + id + '?after=' + state.last)
       .then(function (res) {
-        if (state.id !== id) return
+        if (state.id !== id) return false
         setTyping(!!res.typing)
-        if (!res.messages || !res.messages.length) return
+        if (!res.messages || !res.messages.length) return true
         var added = false
         res.messages.forEach(function (m) {
           if (typeof m.n !== 'number' || m.n <= state.last) return
@@ -369,12 +393,14 @@
           added = true
         })
         if (added) { save(); render(false) }
+        return true
       })
       .catch(function (err) {
         if (err.status === 404 && state.id === id) {
           resetChat()
           notice('Your previous chat has ended. Start a new one below.')
         }
+        return false
       })
   }
 
@@ -397,8 +423,9 @@
   // a late reply from John is never thrown away.
   function checkStale() {
     if (Date.now() - state.lastActivity < STALE_MS) return
-    poll().then(function () {
-      if (state.id && Date.now() - state.lastActivity >= STALE_MS) {
+    // Only a poll that worked can prove the chat really went quiet.
+    poll().then(function (ok) {
+      if (ok && state.id && Date.now() - state.lastActivity >= STALE_MS) {
         resetChat()
         notice('Your previous chat has ended. Start a new one below.')
       }

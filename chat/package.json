@@ -1,6 +1,6 @@
 {
   "name": "svc-chat",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Website chat for air.systems: customers text John, a clearly labeled Claude bot covers when he does not answer in time.",
   "scripts": {
     "dev": "wrangler dev",
@@ -18,5 +18,8 @@
     "wrangler": "^4.142.0"
   },
   "private": true,
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
 }
