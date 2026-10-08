@@ -1,0 +1,163 @@
+/* =====================================================================
+   Silicon Valley Comfort, layout fix
+   Paste at the very bottom of Appearance > Customize > Additional CSS.
+   Part 1 fixes the header on every page.
+   Part 2 only touches the Commercial HVAC San Jose page (page-id-12770).
+   ===================================================================== */
+
+
+/* ---------- PART 1. Header buttons stop hanging off the right edge ----------
+   Logo, eight menu items and the call / text / schedule buttons need about
+   1380px, the nav row only had 1196px, so Schedule Service got cut off on
+   anything narrower than about 1500px and sat off center on wider screens.
+   The body prefix outranks the header's own stylesheet, which loads after this one. */
+
+body #svc-header .svc-nav-in {
+  max-width: 1340px;
+  gap: 16px;
+}
+body #svc-header .svc-menu {
+  gap: 0;
+  margin-left: 0;
+}
+body #svc-header .svc-menu .mt,
+body #svc-header .svc-menu a.link {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+
+/* small laptops: drop the header Text button, the top strip already has Text Us */
+@media (max-width: 1360px) {
+  body #svc-header .svc-cta .btn.text { display: none; }
+  body #svc-header .svc-logo .wm { font-size: 19px; }
+}
+
+/* tablets and narrow laptops get the menu button instead of a squeezed nav */
+@media (max-width: 1240px) {
+  body #svc-header .svc-menu,
+  body #svc-header .svc-cta { display: none; }
+  body #svc-header .svc-burger { display: flex; }
+  body #svc-header .svc-drawer { display: block; }
+}
+
+
+/* ---------- PART 2. Commercial page, one centered column top to bottom ----------
+   Text was held at 900px but the hero, stats, price table, steps, callout,
+   related links and the two proof sections ran to the edge of the screen.
+   Now every section shares the same two edges. */
+
+body.page-id-12770 {
+  --svcc-col: 852px;     /* the one width everything lines up to, same as the text before */
+  --svcc-gutter: 24px;   /* side space on phones and tablets */
+}
+
+/* the theme pads this wrapper by different amounts per screen size,
+   which is why text and cards drifted apart on tablets. The column owns the gutter now. */
+body.page-id-12770 .entry-content-wrap {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* every section: same width, same center line */
+body.page-id-12770 .entry-content > * {
+  box-sizing: border-box;
+  width: auto !important;
+  max-width: min(var(--svcc-col), calc(100% - 2 * var(--svcc-gutter))) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* text no longer carries its own side padding, so its edge is the column edge.
+   important because the page's own style block loads after Additional CSS */
+body.page-id-12770 .entry-content > .wp-block-paragraph,
+body.page-id-12770 .entry-content > .wp-block-heading,
+body.page-id-12770 .entry-content > ul.svcc-bul,
+body.page-id-12770 .entry-content > ol {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* orange accent bar sits on the column edge instead of poking out past it */
+body.page-id-12770 .entry-content > .svcc-inline-cta {
+  padding-left: 14px;
+  padding-right: 0;
+}
+
+/* the proof section was built to run wall to wall with inline styles; make it a card in the column */
+body.page-id-12770 .entry-content > .svc-verify-links {
+  border-radius: 14px;
+  padding: 40px 0 !important;
+  margin-top: 30px !important;
+  margin-bottom: 30px !important;
+}
+body.page-id-12770 .svc-verify-links > div {
+  max-width: none !important;
+  padding: 0 clamp(20px, 4vw, 32px) !important;
+}
+/* four proof cards: two by two instead of three plus an orphan */
+body.page-id-12770 .svc-verify-links div[style*="auto-fit"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+@media (max-width: 600px) {
+  body.page-id-12770 .svc-verify-links div[style*="auto-fit"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Check it yourself block: content fills the column, no extra inset */
+body.page-id-12770 .svcz-band,
+body.page-id-12770 .svcz-inner {
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+
+/* ---------- Header photo ----------
+   Rooftop condenser bank with the downtown San Jose skyline and water tower,
+   already in the media library, so nothing to upload.
+   The photo fills a 4:3 band across the top of the hero card, so the skyline stays
+   in view at any screen width, then fades into the dark where the text sits. */
+
+body.page-id-12770 .svcc-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  margin-top: clamp(16px, 3vw, 32px);
+  background: linear-gradient(160deg, #1b232d 0%, #1d2733 55%, #3a2a22 100%);
+  padding: 32px clamp(20px, 5vw, 44px) 48px;
+}
+body.page-id-12770 .svcc-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  aspect-ratio: 4 / 3;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(16, 22, 30, 0.04) 0%, rgba(16, 22, 30, 0.10) 42%, rgba(16, 22, 30, 0.82) 52%, rgba(16, 22, 30, 0.88) 74%),
+    url("https://www.air.systems/wp-content/uploads/2024/04/20180827_095444-scaled.webp") center top / cover no-repeat;
+  -webkit-mask-image: linear-gradient(180deg, #000 48%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 48%, transparent 100%);
+}
+/* text starts just under the skyline. A percentage padding follows the card's width,
+   which is exactly what the photo band's height follows too */
+body.page-id-12770 .svcc-hero__in {
+  max-width: none;
+  padding-top: 38%;
+}
+body.page-id-12770 .svcc-hero .svcc-h1 {
+  margin: 0 0 14px;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
+}
+/* the theme's heading and paragraph margins were beating the hero's own,
+   which left a dead gap above the headline */
+body.page-id-12770 .svcc-hero .svcc-eyebrow {
+  margin: 0 0 10px;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+body.page-id-12770 .svcc-hero .svcc-lead { margin: 0 0 22px; }
+@media (max-width: 600px) {
+  body.page-id-12770 .svcc-hero { padding: 24px 18px 34px; }
+}
