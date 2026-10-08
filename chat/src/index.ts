@@ -167,7 +167,7 @@ Your phone rings when:
 • a customer asks to talk to you (reply within ${waitText(env)}, or the bot tells them you are not available)
 • the bot cannot answer something, or is out of answers for the day
 • a customer writes in a chat you are in (you replied in the last 15 minutes)
-At most ${num(env.RINGS_PER_HOUR, 6)} rings an hour across all chats.
+${num(env.RINGS_PER_HOUR, 6) > 0 ? `At most ${num(env.RINGS_PER_HOUR, 6)} of those rings an hour across all chats (a chat you are in always rings).` : 'No hourly cap on rings.'}
 
 To answer, swipe left on any chat message (or long press and tap Reply) and type. It shows on the website as "John (live reply)". Only text goes through, and editing a sent reply does not change the website.
 
@@ -237,7 +237,7 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
       ? 'Away mode is on. Customers who ask for you are told you are not available.'
       : `You are on. Customers who ask for you ring your phone, and you have ${waitText(env)} to answer before the bot tells them you are not available.`
     return reply(
-      `${mode}\nToday: ${usage.rooms} new chats, ${usage.bot} bot replies (daily caps ${num(env.NEW_CHATS_DAILY_BUDGET, 200)} and ${num(env.BOT_DAILY_BUDGET, 300)}). Rings this hour: ${usage.rings} (cap ${num(env.RINGS_PER_HOUR, 6)}).`,
+      `${mode}\nToday: ${usage.rooms} new chats, ${usage.bot} bot replies (daily caps ${num(env.NEW_CHATS_DAILY_BUDGET, 200)} and ${num(env.BOT_DAILY_BUDGET, 300)}). Rings this hour: ${usage.rings} (${num(env.RINGS_PER_HOUR, 6) > 0 ? `cap ${num(env.RINGS_PER_HOUR, 6)}` : 'no cap'}).`,
     )
   }
   if (command === '/start' || command === '/help') return reply(help(env))

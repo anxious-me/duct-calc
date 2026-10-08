@@ -26,6 +26,7 @@ const webhookSetups = []
 const commandMenus = []
 let nextReply = { text: 'Hello from the bot.', stop_reason: 'end_turn' }
 let telegramDown = false
+let telegramDelay = 0
 
 const mock = http.createServer(async (req, res) => {
   let body = ''
@@ -70,6 +71,7 @@ const mock = http.createServer(async (req, res) => {
     return
   }
   if (req.url.includes('/sendMessage')) {
+    if (telegramDelay) await sleep(telegramDelay)
     if (telegramDown) {
       res.statusCode = 502
       res.end('{"ok":false}')
@@ -202,6 +204,12 @@ const waitBot = (id, after, startsWith = '') =>
 const waitSend = (from, pred, label) => waitFor(() => sendSince(from, pred), 10000, label)
 const loudSince = (from) => telegramSends.slice(from).filter((m) => !m.disable_notification)
 const tag = (id) => `Chat ${id.slice(0, 4)}`
+async function ringsThisHour() {
+  const from = telegramSends.length
+  await johnSays('/status')
+  const st = await waitSend(from, (m) => m.text.includes('Rings this hour:'), 'the /status reply')
+  return Number(st.text.match(/Rings this hour: (\d+)/)[1])
+}
 async function noBotReply(id, after, ms) {
   await sleep(ms)
   return !(await poll(id, after)).messages.some((m) => m.from === 'bot')
@@ -318,24 +326,27 @@ console.log('\nTypos never reach the customer')
 {
   const sends2 = telegramSends.length
   const count = (await poll(a)).messages.length
+  // Each reply is matched by its text: a background note (a transfer timing out) can land in between.
   await johnSays('/mee', ringA)
-  await waitSends(sends2 + 1)
-  check('typo command gets an Unknown command reply', lastSend().text === 'Unknown command. Send /help for the list.', lastSend().text)
+  const typo = await waitSend(sends2, (m) => m.text === 'Unknown command. Send /help for the list.', 'the typo reply')
+  check('typo command gets an Unknown command reply', !!typo)
   check('typo command never reaches the customer', (await poll(a)).messages.length === count)
+  const sends3 = telegramSends.length
   await johnSays('/me')
-  await waitSends(sends2 + 2)
-  check('/me without a reply target explains itself', lastSend().text.includes('Reply to a customer message with /me'), lastSend().text)
+  const bare = await waitSend(sends3, (m) => m.text.includes('Reply to a customer message with /me'), 'the bare /me reply')
+  check('/me without a reply target explains itself', !!bare)
+  const sends4 = telegramSends.length
   await johnSays('/fake')
-  await waitSends(sends2 + 3)
-  check('unknown standalone command is called out', lastSend().text === 'Unknown command. Send /help for the list.', lastSend().text)
+  const fake = await waitSend(sends4, (m) => m.text === 'Unknown command. Send /help for the list.', 'the /fake reply')
+  check('unknown standalone command is called out', !!fake)
 }
 
 console.log('\n/me and /bot')
 {
   const sends = telegramSends.length
   await johnSays('/me', ringA)
-  await waitSends(sends + 1)
-  check('/me confirms', lastSend().text === 'Bot is off for that chat. All you.', lastSend().text)
+  const meOk = await waitSend(sends, (m) => m.text === 'Bot is off for that chat. All you.', 'the /me reply')
+  check('/me confirms', !!meOk)
   const count = (await poll(a)).messages.length
   await say(a, 'Anyone there?')
   const off = await waitSend(sends + 1, (m) => m.text.includes('Customer: Anyone there?'), 'the bot-off ring')
@@ -386,6 +397,15 @@ const c = (await createChat('/furnace-repair')).body.id
     JSON.stringify(call.messages),
   )
 
+  // After a real ring, the bot recapping it is the truth, not a new transfer.
+  after = (await poll(c)).messages.length
+  const beforeRecap = telegramSends.length
+  nextReply = { text: "Yes, I sent this chat to John earlier, but he isn't available right now. What's the best number for you?", stop_reason: 'end_turn' }
+  await say(c, 'Did he get my message?')
+  const recap = await waitBot(c, after)
+  check('a recap of an earlier ring is posted as an answer', recap.text.startsWith('Yes, I sent this chat to John earlier'), recap.text)
+  check('and does not ring John again', loudSince(beforeRecap).length === 0, loudSince(beforeRecap).map((m) => m.text.slice(0, 50)).join(' | '))
+
   // Two more rings are allowed, then the chat stops ringing John.
   for (let i = 0; i < 2; i++) {
     after = (await poll(c)).messages.length
@@ -417,8 +437,8 @@ const b = (await createChat('/furnace')).body.id
   check('only the final ref line routes the reply', (await poll(a)).messages.length === countA)
   const sends2 = telegramSends.length
   await johnSays('Not routed', `blah ref: ${a} trailing`)
-  await waitSends(sends2 + 1)
-  check('a ref line that is not the last line is ignored', lastSend().text.startsWith('Swipe left'), lastSend().text)
+  const notRouted = await waitSend(sends2, (m) => m.text.startsWith('Swipe left'), 'the not-routed reply')
+  check('a ref line that is not the last line is ignored', !!notRouted)
   const sends3 = telegramSends.length
   nextReply = { text: 'Got it.', stop_reason: 'end_turn' }
   await say(b, `Please use ref: ${a} for me`)
@@ -479,7 +499,7 @@ console.log('\nBot output guards: anything the bot cannot say rings John instead
   // Each of these trips one filter pattern on its own.
   for (const [label, reply] of [
     ['a hedged guess about John', 'John is probably asleep right now, but I can take your details.'],
-    ['a guess about his job', "He's on a job right now."],
+    ['a guess about his job', "John isn't here. He's on a job right now."],
     ['a license number in plain words', 'Our license number is 1026000.'],
     ['a CSLB number', 'CSLB 1045678 is on file.'],
     ['a Premier Dealer claim', 'We are a Bryant Premier Dealer.'],
@@ -496,6 +516,11 @@ console.log('\nBot output guards: anything the bot cannot say rings John instead
   await say(chat, 'Am I talking to a real person?')
   bot = await waitBot(chat, after, "No, I'm John Towner's AI assistant")
   check('"I\'m John Towner\'s AI assistant" is allowed through', !!bot)
+  after = (await poll(chat)).messages.length
+  nextReply = { text: "While he's on the roof, he can check that the fan spins and the coil is clear.", stop_reason: 'end_turn' }
+  await say(chat, 'My husband is up on the roof by the AC, what should he check?')
+  bot = await waitBot(chat, after, "While he's on the roof")
+  check('a reply about the customer\'s husband is not mistaken for a guess about John', !!bot)
 }
 
 console.log('\nSafety steps and honest transfers')
@@ -510,25 +535,45 @@ console.log('\nSafety steps and honest transfers')
     safe.text,
   )
 
+  const s3 = (await createChat('/emergency-2')).body.id
+  nextReply = { status: 500 }
+  await say(s3, 'My house smells like natural gas, is anyone there?')
+  const safe3 = await waitBot(s3, 0, 'If you smell gas')
+  check('other gas wording gets the safety steps too, even when Claude is down', safe3.text.includes('PG&E'), safe3.text)
+
   const s2 = (await createChat('/claims')).body.id
   const beforeClaim = telegramSends.length
-  nextReply = { text: "I just sent this chat to John's phone. He'll answer here.", stop_reason: 'end_turn' }
+  nextReply = { text: "I've sent this chat to John. He'll answer here if he's available.", stop_reason: 'end_turn' }
   await say(s2, 'Can John call me?')
   const claim = await waitBot(s2, 0)
   check('a reply that only claims it rang John becomes a real ring', claim.text.startsWith(RINGING), claim.text)
   const realRing = await waitSend(beforeClaim, (m) => m.text.startsWith('THE CUSTOMER WANTS TO TALK TO YOU') && m.text.endsWith(`ref: ${s2}`), 'the real ring')
   check('and that ring is loud', realRing.disable_notification === false)
+
+  // The customer writes while the ring is still going out: that message still gets an answer.
+  const s4 = (await createChat('/slow-ring')).body.id
+  telegramDelay = 2500
+  nextReply = { tool: 'transfer_to_john', reason: 'Wants John' }
+  await say(s4, 'Can I talk to John?')
+  await waitFor(() => anthropicCalls.at(-1)?.messages?.at(-1)?.content?.includes('Can I talk to John?'), 5000, 'the transfer call')
+  await sleep(300)
+  nextReply = { text: 'Got your number, thanks.', stop_reason: 'end_turn' }
+  await say(s4, 'My number is 408-555-0100')
+  await waitBot(s4, 0, RINGING)
+  telegramDelay = 0
+  const lateAnswer = await waitBot(s4, 0, 'Got your number')
+  check('a message sent during the ring is still answered', !!lateAnswer)
 }
 
 console.log('\n/status, /away and /back')
 {
   const sends = telegramSends.length
   await johnSays('/status')
-  await waitSends(sends + 1)
+  const st = await waitSend(sends, (m) => m.text.includes('Today:'), 'the /status reply')
   check(
     '/status reports mode, usage and rings',
-    /You are on\./.test(lastSend().text) && /Today: \d+ new chats, \d+ bot replies/.test(lastSend().text) && /Rings this hour: \d+ \(cap 20\)/.test(lastSend().text),
-    lastSend().text,
+    /You are on\./.test(st.text) && /Today: \d+ new chats, \d+ bot replies/.test(st.text) && /Rings this hour: \d+ \(cap 20\)/.test(st.text),
+    st.text,
   )
 
   // A chat John took over with /me, to check that /away hands it back to the bot.
@@ -636,6 +681,7 @@ console.log('\nOdds and ends')
   check('a reply made stale by a newer message is never shown', !raceMsgs.some((m) => m.text.startsWith('Answer to the first')), JSON.stringify(raceMsgs.map((m) => m.text)))
 
   // Telegram is down: the customer still gets the bot.
+  const ringsBefore = await ringsThisHour()
   const outage = (await createChat('/outage')).body.id
   telegramDown = true
   nextReply = { text: 'Still here while Telegram is down.', stop_reason: 'end_turn' }
@@ -650,6 +696,16 @@ console.log('\nOdds and ends')
   await sleep(5000)
   telegramDown = false
   check('no "not available" line follows a ring that never happened', !(await poll(outage, outAfter)).messages.some((m) => m.text.startsWith(UNAVAILABLE)))
+  check('a ring Telegram refused does not count against the hourly cap', (await ringsThisHour()) === ringsBefore, ringsBefore)
+
+  // A long message: John's copy keeps all of it, including the phone number at the end.
+  const longMsg = (await createChat('/long-message')).body.id
+  const beforeLong = telegramSends.length
+  nextReply = { text: 'Thanks for all the detail.', stop_reason: 'end_turn' }
+  const detail = 'The upstairs unit has been short cycling for a week. '.repeat(13) + 'Call me at 408-555-1234, 55 Elm St.'
+  await say(longMsg, detail)
+  const longCopy = await waitSend(beforeLong, (m) => m.text.endsWith(`ref: ${longMsg}`) && m.text.includes('\nBot: '), 'the copy of the long message')
+  check("John's copy keeps the end of a long message", longCopy.text.includes('Call me at 408-555-1234, 55 Elm St.'), longCopy.text.slice(0, 120))
 
   // Several long messages at once: the copy to John still carries the bot's answer.
   const many = (await createChat('/many')).body.id
@@ -689,6 +745,10 @@ console.log('\nA chat at its bot limit')
   const eMsgs = (await poll(e, afterE)).messages
   check('the customer is told once, not after every message', eMsgs.filter((m) => m.from === 'bot').length === 1, JSON.stringify(eMsgs.map((m) => m.text.slice(0, 40))))
   check('nothing rings for a capped chat in away mode', loudSince(beforeE).length === 0, loudSince(beforeE).map((m) => m.text.slice(0, 50)).join(' | '))
+  const afterGas = (await poll(e)).messages.length
+  await say(e, 'Now I smell gas near the furnace')
+  const gasLine = await waitBot(e, afterGas)
+  check('an emergency in a capped chat still gets the safety steps', gasLine.text.startsWith('If you smell gas'), gasLine.text)
   const sb = telegramSends.length
   await johnSays('/back')
   await waitSend(sb, (m) => m.text.startsWith('Back.'), 'the /back reply')
@@ -696,6 +756,10 @@ console.log('\nA chat at its bot limit')
 
 console.log('\nHourly ring cap')
 {
+  // Stay clear of the top of the hour, when the count starts over (Pacific hours line up with UTC hours).
+  const toHour = 3600000 - (Date.now() % 3600000)
+  if (toHour < 120000) await sleep(toHour + 2000)
+  const start = await ringsThisHour()
   let capped = null
   let rang = 0
   for (let i = 0; i < 25 && !capped; i++) {
@@ -707,7 +771,7 @@ console.log('\nHourly ring cap')
     if (line.text.startsWith("I couldn't reach John's phone just now.")) capped = { before }
     else rang++
   }
-  check('the hourly ring cap stops rings across chats', !!capped, rang)
+  check('the hourly ring cap stops rings across chats at exactly the cap', !!capped && start + rang === 20, { start, rang })
   if (capped) {
     const note = await waitSend(capped.before, (m) => m.text.includes('times this hour'), 'the cap note')
     check('over the cap nothing rings, and John gets a silent note', note.disable_notification === true && loudSince(capped.before).length === 0)

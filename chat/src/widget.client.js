@@ -28,6 +28,7 @@
   var pollTimer = null
   var polling = false
   var sending = false
+  var movedDuringSend = false
   var rendered = 0
   var scrollWas = null
 
@@ -45,6 +46,7 @@
     } catch (e) { return null }
   }
   function save() {
+    if (sending && movedDuringSend) return
     try { localStorage.setItem(STORE_KEY, JSON.stringify(state)) } catch (e) { /* private mode */ }
   }
 
@@ -88,7 +90,7 @@
     'textarea{flex:1;resize:none;border:1px solid #d5dbe2;border-radius:12px;padding:10px 12px;font-size:16px;line-height:1.35;max-height:120px;outline:none;color:#1b1f24;background:#fff}' +
     'textarea:focus{border-color:var(--svc-accent,#0f62fe)}' +
     '.send{border:0;background:var(--svc-accent,#0f62fe);color:#fff;border-radius:12px;width:46px;cursor:pointer;display:flex;align-items:center;justify-content:center}' +
-    '.send:disabled{opacity:.5;cursor:default}' +
+    '.send:disabled,.send[aria-disabled=true]{opacity:.5;cursor:default}' +
     '.send svg{width:20px;height:20px}' +
     '.bubble:focus-visible,.icon:focus-visible,.send:focus-visible,.teaser:focus-visible{outline:3px solid #ffbf47;outline-offset:2px}' +
     '@media (max-width:600px){' +
@@ -174,7 +176,12 @@
   })
   window.addEventListener('online', pollNow)
   window.addEventListener('pageshow', function (e) { if (e.persisted) { resync(); pollNow() } })
-  window.addEventListener('storage', function (e) { if (e.key === STORE_KEY) { resync(); pollNow() } })
+  window.addEventListener('storage', function (e) {
+    if (e.key !== STORE_KEY) return
+    resync()
+    // A hidden tab catches up when it is shown again (visibilitychange).
+    if (!document.hidden) pollNow()
+  })
   var narrow = window.matchMedia('(min-width: 601px)')
   var onWidth = function () { if (open) syncModal() }
   if (narrow.addEventListener) narrow.addEventListener('change', onWidth)
@@ -223,12 +230,36 @@
     lockScroll(modal)
   }
 
+  // The badge is visual only. Screen readers hear about replies that arrive while the chat is closed.
+  function announce(msgs) {
+    if (open) return
+    var replies = msgs.filter(function (m) { return m.from !== 'customer' })
+    if (!replies.length || !state.unread) return
+    var fromJohn = replies.some(function (m) { return m.from === 'john' })
+    announcer.textContent = (fromJohn ? 'John replied in the chat. ' : 'New message in the chat. ') + state.unread + ' unread.'
+  }
+
   // Another tab, or a page restored from the back/forward cache, may have moved the
   // chat on. Pick up what is saved instead of writing stale state over it.
   function resync() {
-    if (sending) return false
     var s = load()
-    if (!s || s.id === state.id) return false
+    if (sending) {
+      // Picked up when the send ends, so this tab never writes the old chat back over it.
+      if (s && s.id !== state.id) movedDuringSend = true
+      return false
+    }
+    if (!s) return false
+    if (s.id === state.id) {
+      // Same chat, further along in another tab: take its messages instead of fetching and recounting them.
+      if (s.last > state.last) {
+        var news = s.messages.slice(state.messages.length)
+        if (open) s.unread = 0
+        state = s
+        render(false)
+        announce(news)
+      }
+      return false
+    }
     state = s
     rendered = 0
     list.innerHTML = ''
@@ -334,6 +365,7 @@
   }
 
   function resetChat() {
+    movedDuringSend = false
     state = fresh()
     rendered = 0
     save()
@@ -388,7 +420,8 @@
     input.value = ''
     input.style.height = 'auto'
     sending = true
-    sendBtn.disabled = true
+    // aria-disabled, not disabled: a disabled button drops keyboard focus out of the chat.
+    sendBtn.setAttribute('aria-disabled', 'true')
     clearTimeout(pollTimer)
     ensureChat()
       .then(function (id) {
@@ -416,7 +449,11 @@
       })
       .then(function () {
         sending = false
-        sendBtn.disabled = false
+        sendBtn.removeAttribute('aria-disabled')
+        if (movedDuringSend) {
+          movedDuringSend = false
+          resync()
+        }
         schedulePoll()
       })
   }
@@ -431,18 +468,16 @@
         if (!res.messages || !res.messages.length) return true
         var added = false
         var unseen = 0
-        var fromJohn = false
         res.messages.forEach(function (m) {
           if (typeof m.n !== 'number' || m.n <= state.last) return
           state.messages.push({ from: m.from, text: m.text, ts: m.ts || Date.now() })
           state.last = m.n
           if (m.ts && m.ts > state.lastActivity) state.lastActivity = m.ts
-          if (m.from !== 'customer' && !open) { state.unread++; unseen++; if (m.from === 'john') fromJohn = true }
+          if (m.from !== 'customer' && !open) { state.unread++; unseen++ }
           added = true
         })
         if (added) { save(); render(false) }
-        // The badge is visual only. Screen readers hear about replies while the chat is closed here.
-        if (unseen && !open) announcer.textContent = (fromJohn ? 'John replied in the chat. ' : 'New message in the chat. ') + state.unread + ' unread.'
+        if (unseen) announce(res.messages)
         return true
       })
       .catch(function (err) {

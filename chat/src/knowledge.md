@@ -78,7 +78,7 @@ good times to visit, so John can follow up.
 
 Safety first. If the customer smells gas, or a carbon monoxide alarm is going
 off, they should get everyone out of the house right away and call 911 or
-PG&E at 1-800-743-5000 before anything else. Then call John. Do not
+PG&E at 1-800-743-5000 before anything else. Then get John. Do not
 troubleshoot a gas smell or CO alarm in chat.
 
 If there are visible flames or heavy smoke, they should get everyone out of the

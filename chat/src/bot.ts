@@ -23,7 +23,7 @@ How to help:
 - Never quote any price except the diagnostic and labor rates in the knowledge base. Repair and new system prices are quoted by John after a diagnostic.
 - Never mention license numbers, certifications, awards, badges, dealer tiers, memberships, or guarantees. The only brand description you may use is the Bryant wording exactly as written in the knowledge base.
 - Only suggest simple, safe homeowner checks (thermostat settings, breaker reset once, filter, service switch). Never walk anyone through opening panels, wiring, gas, or refrigerant work.
-- For gas smell or a carbon monoxide alarm: tell them to get everyone outside and call 911 or PG&E at 1-800-743-5000 first, before anything else, even if they ask for John.
+- For gas smell or a carbon monoxide alarm: if they ask for John, a person or a call back, call transfer_to_john and write nothing else; the system shows them the safety steps first. Otherwise tell them to get everyone outside and call 911 or PG&E at 1-800-743-5000 before anything else.
 - For visible flames or heavy smoke: tell them to get everyone outside and call 911 first. For a burning smell, light smoke from the vents, or sparks: tell them to turn the system off at the thermostat and the breaker, then offer to get John or give them 408-691-5940.
 - When someone wants service and would rather not wait for John, or John is not available, collect name, phone, service address, what the system is doing, and good times to visit. Ask for what is missing, two items at a time. Once you have it, tell them John will text or call to confirm the visit. You cannot confirm a time yourself.
 
@@ -62,6 +62,10 @@ const HISTORY_MESSAGES = 40
 const HISTORY_CHARS = 20000
 const MAX_REPLY_CHARS = 1200
 
+/** "is probably asleep", "may be on a job": a guess about what John is doing. */
+const JOHN_STATE =
+  "(\\s+(is|may be|might be|could be|must be|will be|would be)|'s|'ll be)\\s+((probably|likely|most likely|still|currently|now|just|already|usually|out|away|right now|really|very)\\s+){0,2}(busy|asleep|sleeping|tied up|on (a|the) (job|call|roof|site)|out on|out (at|with))"
+
 /** Replies matching any of these never reach the customer. Kept narrow on purpose: see sanitizeReply. */
 const DENY = [
   // License numbers in any common wording: "license # is 1026000", "CSLB 1045678", "Lic. No. 1026000".
@@ -72,14 +76,42 @@ const DENY = [
   /new-school@/i,
   /no fluff/i,
   // Guesses about what John is doing, hedged or not: "John is probably asleep", "he may be on a job".
-  /\b(john|he)(\s+(is|may be|might be|could be|must be|will be|would be)|'s|'ll be)\s+((probably|likely|most likely|still|currently|now|just|already|usually|out|away|right now|really|very)\s+){0,2}(busy|asleep|sleeping|tied up|on (a|the) (job|call|roof|site)|out on|out (at|with))/i,
+  new RegExp(`\\bjohn${JOHN_STATE}`, 'i'),
+  // "he" only counts when John was named just before, so answers about the customer's husband or dad pass.
+  new RegExp(`\\bjohn\\b[^]{0,160}?\\bhe${JOHN_STATE}`, 'i'),
   // "I'm John" is impersonation; "I'm John's AI assistant" and "I'm John Towner's assistant" are the truth.
   /\bI('m| am) john\b(?!'s| towner's)/i,
 ]
 
-/** A reply that says John's phone was rung. Only the worker may say that, after a real ring. */
-const CLAIMS_RING =
-  /\b(sent|forwarded|passed)\b[^.?!\n]{0,40}\bto john'?s phone\b|\bjohn'?s phone (is ringing|was rung|has been rung|already has this chat)|\bI('ve| have)? (just )?(rung|rang|called|paged|pinged) john\b/i
+/**
+ * A reply in which the bot says it is ringing or has handed the chat to John. Only the worker may
+ * say that, after a real ring. First person only: a recap like "this chat was sent to John's
+ * phone earlier" is the truth, and an offer ("want me to get John?") is not a claim.
+ */
+const CLAIMS_RING = new RegExp(
+  [
+    "\\bI('ve| have|'m| am)? (just |now )?(sent|forwarded|passed|transferr?ed|handed) (this chat|this conversation|the chat|you)\\b[^.?!\\n]{0,20}\\b(to|over to) john\\b",
+    "\\bI('ve| have)? (just )?(sent|forwarded|passed)\\b[^.?!\\n]{0,40}\\bto john'?s phone\\b",
+    "\\bI('ve| have|'m| am)? (just |now )?(rung|rang|called|paged|pinged|ringing|calling|paging|pinging|buzzed|buzzing) john\\b",
+    "\\b(connect(ed|ing)|transferr?(ed|ing)) you (to|with) john\\b",
+    "\\bjohn'?s phone is ringing\\b",
+  ].join('|'),
+  'gi',
+)
+
+/** True when a sentence claims the bot reached John, not counting questions, negations or conditions. */
+export function claimsRing(text: string): boolean {
+  for (const m of text.matchAll(CLAIMS_RING)) {
+    const start = Math.max(text.lastIndexOf('.', m.index), text.lastIndexOf('!', m.index), text.lastIndexOf('?', m.index), text.lastIndexOf('\n', m.index)) + 1
+    const rest = text.slice(m.index).search(/[.?!\n]/)
+    const end = rest === -1 ? text.length : m.index + rest
+    const sentence = text.slice(start, end + 1)
+    if (sentence.trim().endsWith('?')) continue
+    if (/\b(not|unless|if|want me|would you|should i|can i|shall i)\b|n't\b/i.test(sentence)) continue
+    return true
+  }
+  return false
+}
 
 /**
  * What the bot came up with.
@@ -89,7 +121,7 @@ const CLAIMS_RING =
  */
 export type BotResult =
   | { kind: 'ok'; text: string }
-  | { kind: 'transfer'; reason: string }
+  | { kind: 'transfer'; reason: string; claimed?: string }
   | { kind: 'safe' | 'error' }
 
 const SAFE: BotResult = { kind: 'safe' }
@@ -171,8 +203,9 @@ export async function botReply(env: Env, history: ChatMessage[], status = ''): P
     if (response.stop_reason === 'max_tokens') text = lastFullSentence(text)
     const clean = sanitizeReply(text)
     if (clean.blocked) return SAFE
-    // Claiming John's phone was rung without calling the tool would be a lie. Make it true instead.
-    if (CLAIMS_RING.test(clean.text)) return { kind: 'transfer', reason: '' }
+    // Claiming John was rung without calling the tool would be a lie. The room makes it true, or,
+    // when his phone really did ring earlier in this chat, posts the text as an ordinary answer.
+    if (claimsRing(clean.text)) return { kind: 'transfer', reason: '', claimed: clean.text }
     return clean.text ? { kind: 'ok', text: clean.text } : FAILED
   } catch (error) {
     if (error instanceof Anthropic.RateLimitError) {

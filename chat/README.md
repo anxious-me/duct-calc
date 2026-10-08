@@ -33,7 +33,9 @@ When John's phone rings (everything else is a silent copy):
 
 Set `RING_ON_FIRST_QUESTION = "true"` in `wrangler.toml` to also ring for the
 first question in every new chat. One chat can ring John at most 3 times, and all
-chats together at most `RINGS_PER_HOUR` (6) times an hour. If a ring is over the
+chats together at most `RINGS_PER_HOUR` (6) times an hour for customers who ask for
+him or that the bot cannot help (first-question rings have their own count with the
+same cap, and a chat John is in always rings). If a ring is over the
 cap or Telegram does not take it, the customer is told John could not be reached
 and asked for their details; the chat never claims his phone rang when it did not.
 If a customer who asks for John mentions gas, carbon monoxide, fire, smoke or
@@ -169,7 +171,8 @@ npm run smoke   # starts wrangler dev against mock Claude and Telegram servers a
 - Per day, in Pacific time: 200 new chats and 300 bot replies
   (`NEW_CHATS_DAILY_BUDGET` and `BOT_DAILY_BUDGET`, counting Claude calls). Past
   the bot cap, a customer's next message rings John once like a transfer.
-- Per hour: 6 rings of John's phone across all chats (`RINGS_PER_HOUR`).
+- Per hour: 6 transfer rings of John's phone across all chats (`RINGS_PER_HOUR`,
+  `0` turns the cap off). Chats John is in are not capped.
   `/status` shows today's numbers and this hour's rings.
 - Chats are deleted 30 days after their last message (`RETENTION_DAYS`, `0` keeps
   them forever). The widget starts a fresh chat after 14 quiet days, and the

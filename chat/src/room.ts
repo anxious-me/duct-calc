@@ -27,7 +27,7 @@ type Outcome = 'ringing' | 'pending' | 'unavailable' | 'enough' | 'unreached'
 
 /** Gas, carbon monoxide, fire or burning. Narrow on purpose: a plain "gas furnace" question is not an emergency. */
 const DANGER =
-  /\b(smell(s|ed|ing)?( like| of)? gas|gas (smell|leak|odor|odour)|leaking gas|carbon monoxide|co (alarm|detector)|flames?|(a|on) fire|smoke|smoky|smoking|burning|sparks?|sparking)\b/i
+  /\b(smell\w*(\s+\w+){0,3}\s+(gas|propane|rotten eggs?)|(gas|propane) (is |was )?(smell\w*|leak\w*|odou?r)|leaking (gas|propane)|rotten eggs?|(carbon[- ]?)?monoxide|co[- ]?(alarm|detector)|flames?|(a|on) fire|(caught|catch(es|ing)?) (on )?fire|fire (is )?(coming|inside|out of)|smoke|smoky|smoking|burning|sparks?|sparking)\b/i
 const SAFETY_LINE =
   'If you smell gas or a carbon monoxide alarm is going off, get everyone outside now and call 911 or PG&E at 1-800-743-5000. If you see flames or heavy smoke, get everyone out and call 911. For a burning smell or sparks, turn the system off at the thermostat and the breaker. '
 
@@ -142,12 +142,17 @@ export class Room extends DurableObject<Env> {
 
     if (!live && !botOff) {
       // The bot is out of answers here (chat cap or daily budget) and John is not in the
-      // chat. Treat it like a transfer: at most one ring per wait, never under /away, and
-      // the customer hears what happened. Once told, their follow-ups reach John silently.
-      const told =
-        typeof meta.transferUntil === 'number' || (meta.unavailableAt ?? 0) > meta.johnLastAt || (meta.transfers ?? 0) >= MAX_TRANSFERS
-      if (!told) {
-        await this.getJohn(saved, all, 'limit', '', status.away)
+      // chat. Treat it like a transfer: the customer hears what happened, John's phone rings
+      // within the usual limits, never under /away. Once told, follow-ups reach John quietly,
+      // except an emergency, which always gets the safety steps and another try for John.
+      const told = typeof meta.transferUntil === 'number' || (meta.limitToldAt ?? 0) > meta.johnLastAt
+      if (!told || DANGER.test(text)) {
+        try {
+          await this.getJohn(saved, all, 'limit', '', status.away)
+        } catch (error) {
+          // The message is already saved; a retry from the widget would store it twice.
+          console.error('getJohn failed after the message was saved', error instanceof Error ? error.message : String(error))
+        }
         return { ok: true }
       }
       await sendToJohn(
@@ -227,10 +232,13 @@ export class Room extends DurableObject<Env> {
         console.error('Bot handoff failed repeatedly, leaving the chat for John')
         await this.ctx.storage.put('meta', { ...meta, handoffAt: null, handoffTries: 0 })
         // Loud, because the customer is waiting and nobody has answered. Quiet under /away.
-        if (lastSpeaker(msgs) === 'customer' && !meta.botOff) {
-          const quiet = await this.control()
-            .isAway()
-            .catch(() => false)
+        if (lastSpeaker(msgs) === 'customer') {
+          // A /me chat only gets a bot handoff under /away, so that note is quiet too.
+          const quiet =
+            meta.botOff ||
+            (await this.control()
+              .isAway()
+              .catch(() => false))
           await sendToJohn(
             this.env,
             withRef(`${header(meta)}: the bot could not answer after several tries, so the customer has no reply yet.\n\n${transcript(msgs)}\n\nReply to answer them.`, meta.roomId),
@@ -314,11 +322,16 @@ export class Room extends DurableObject<Env> {
       this.botRunning = false
     }
 
+    // John may have sent /away or /back while Claude was thinking. Ask before the final read,
+    // because the call lets other requests run, and the read must reflect them.
+    const awayNow = await this.control()
+      .isAway()
+      .catch(() => away)
     const latest = await this.load()
     if (!latest.meta || latest.meta.handoffAt !== due) return
     if (
       !result ||
-      (latest.meta.botOff && !away) ||
+      (latest.meta.botOff && !awayNow) ||
       lastSpeaker(latest.msgs) !== 'customer' ||
       // Something new from the customer or John means this answer is stale. A system line does not.
       latest.msgs.slice(answeredUpTo).some((m) => !m.sys)
@@ -326,13 +339,18 @@ export class Room extends DurableObject<Env> {
       return consume()
     }
 
-    if (result.kind !== 'ok') {
-      return this.getJohn(latest.meta, latest.msgs, result.kind === 'transfer' ? 'asked' : result.kind, result.kind === 'transfer' ? result.reason : '', away)
+    // The bot only claimed it reached John. If his phone really rang earlier in this chat, the
+    // claim is a recap and goes out as an answer. Otherwise getJohn makes it true.
+    const rangBefore = (latest.meta.transfers ?? 0) > 0 || !!latest.meta.unavailableAt || typeof latest.meta.transferUntil === 'number'
+    const answer = result.kind === 'ok' ? result.text : result.kind === 'transfer' && result.claimed && rangBefore ? result.claimed : null
+    if (answer === null) {
+      const why = result.kind === 'transfer' ? 'asked' : result.kind === 'ok' ? 'asked' : result.kind
+      return this.getJohn(latest.meta, latest.msgs, why, result.kind === 'transfer' ? result.reason : '', awayNow)
     }
 
     // Only real answers count toward the per-chat cap. Canned lines do not.
     const botReplies = latest.meta.botReplies + 1
-    const text = botReplies >= MAX_BOT_REPLIES ? result.text + CAP_NOTE : result.text
+    const text = botReplies >= MAX_BOT_REPLIES ? answer + CAP_NOTE : answer
     const asked = waitingCustomer(latest.msgs)
     const firstQuestion =
       latest.meta.botReplies === 0 && latest.meta.johnLastAt === 0 && !latest.meta.transfers && !latest.meta.unavailableAt
@@ -341,12 +359,18 @@ export class Room extends DurableObject<Env> {
       ...latest.msgs,
       { n: latest.msgs.length + 1, from: 'bot', text, ts: now },
     ])
-    // Silent unless John asked to hear about every new customer (and is not away).
-    const ring = firstQuestion && this.env.RING_ON_FIRST_QUESTION === 'true' && !away
+    // Silent unless John asked to hear about every new customer, is not away, and the hour's cap allows.
+    const ring =
+      firstQuestion &&
+      this.env.RING_ON_FIRST_QUESTION === 'true' &&
+      !awayNow &&
+      (await this.control()
+        .takeFirstRing(num(this.env.RINGS_PER_HOUR, 6))
+        .catch(() => false))
     const head = `${header(latest.meta, asked.join(' '))}${pageLine(latest.meta)}\n`
     const tail = `\nBot: ${text.slice(0, 2000)}\n\nReply to jump in, or reply /me to turn the bot off for this chat.`
     // Keep the newest customer text. The bot's answer and the footer must always survive Telegram's length limit.
-    let quoted = asked.map((t) => `Customer: ${clip(scrubRef(t), 500)}`).join('\n')
+    let quoted = asked.map((t) => `Customer: ${scrubRef(t)}`).join('\n')
     const room = COPY_BUDGET - head.length - tail.length
     if (quoted.length > room) quoted = `...${quoted.slice(-(room - 3))}`
     await sendToJohn(this.env, withRef(head + quoted + tail, latest.meta.roomId), !ring)
@@ -377,8 +401,17 @@ export class Room extends DurableObject<Env> {
 
     let capHit = false
     if (outcome === 'ringing') {
-      if (!(await this.control().takeRing(ringCap))) {
+      // A Control failure fails closed: no ring, and the customer gets the honest line.
+      const slot = await this.control()
+        .takeRing(ringCap)
+        .catch((error) => {
+          console.error('takeRing failed', error instanceof Error ? error.message : String(error))
+          return undefined
+        })
+      if (slot === null) {
         capHit = true
+        outcome = 'unreached'
+      } else if (slot === undefined) {
         outcome = 'unreached'
       } else {
         const rang = await sendToJohn(
@@ -388,7 +421,13 @@ export class Room extends DurableObject<Env> {
             meta.roomId,
           ),
         )
-        if (!rang) outcome = 'unreached'
+        if (!rang) {
+          outcome = 'unreached'
+          // The phone did not ring, so it does not count against the hour.
+          await this.control()
+            .refundRing(slot)
+            .catch(() => undefined)
+        }
       }
     }
 
@@ -408,9 +447,16 @@ export class Room extends DurableObject<Env> {
       unavailableAt: outcome === 'unavailable' || outcome === 'unreached' ? now : cur.meta.unavailableAt,
     }
     // If John already answered while his phone was ringing, his reply speaks for itself.
-    const line = (danger ? SAFETY_LINE : '') + johnLine(why, outcome, inQuietHours(this.env))
+    const line = (danger || DANGER.test(waitingCustomer(cur.msgs).join(' ')) ? SAFETY_LINE : '') + johnLine(why, outcome, inQuietHours(this.env))
     const post = !(rang && johnStepped)
-    await this.saveMeta(next, post ? [...cur.msgs, { n: cur.msgs.length + 1, from: 'bot', text: line, ts: now, canned: true }] : undefined)
+    if (post && why === 'limit') next.limitToldAt = now
+    // The customer wrote again while the ring went out. Their new message still needs an
+    // answer, so this line is a system line the bot looks past, not the bot's turn.
+    const late = cur.msgs.slice(msgs.length).some((m) => m.from === 'customer' && !m.sys)
+    await this.saveMeta(
+      next,
+      post ? [...cur.msgs, { n: cur.msgs.length + 1, from: 'bot', text: line, ts: now, canned: true, ...(late ? { sys: true } : {}) }] : undefined,
+    )
 
     if (rang) return
     if (outcome === 'unreached' && !capHit) {
@@ -518,9 +564,24 @@ export class Control extends DurableObject<Env> {
     return this.take('rooms', budget, localDay(this.env))
   }
 
-  /** Counts one ring of John's phone against this hour's cap, across all chats. False means the cap is hit. */
-  takeRing(limit: number): Promise<boolean> {
-    return this.take('ring', limit, localHour(this.env))
+  /**
+   * Counts one ring of John's phone against this hour's cap, across all chats. Returns the hour
+   * it was counted in (for a refund if Telegram refuses the ring), or null when the cap is hit.
+   */
+  async takeRing(limit: number): Promise<string | null> {
+    const period = localHour(this.env)
+    return (await this.take('ring', limit, period)) ? period : null
+  }
+
+  /** Gives back a ring Telegram did not deliver. Only within the hour it was counted in. */
+  async refundRing(period: string): Promise<void> {
+    const cur = await this.ctx.storage.get<{ day: string; count: number }>('count:ring')
+    if (cur?.day === period && cur.count > 0) await this.ctx.storage.put('count:ring', { day: period, count: cur.count - 1 })
+  }
+
+  /** First-question rings have their own hourly count, so they can never use up the rings customers ask for. */
+  takeFirstRing(limit: number): Promise<boolean> {
+    return this.take('ring-first', limit, localHour(this.env))
   }
 
   async usage(): Promise<{ day: string; bot: number; rooms: number; rings: number }> {

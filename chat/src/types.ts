@@ -69,4 +69,6 @@ export interface RoomMeta {
   transfers?: number
   /** Set once the bot has told the customer John is not available. */
   unavailableAt?: number
+  /** Set when the customer was told the bot is out of answers here, so later messages go to John quietly. */
+  limitToldAt?: number
 }
