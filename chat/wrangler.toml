@@ -1,0 +1,70 @@
+name = "svc-chat"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Keep console output (errors, one usage line per bot reply) in Workers Logs.
+[observability]
+enabled = true
+
+# Import the knowledge base, widget, and demo page as plain text.
+[[rules]]
+type = "Text"
+globs = ["**/*.md", "**/*.client.js", "**/*.html"]
+fallthrough = false
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[durable_objects.bindings]]
+name = "CONTROL"
+class_name = "Control"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room", "Control"]
+
+# Per-IP rate limits. Best effort (counted per Cloudflare location); the daily
+# budgets in [vars] are the hard stop on cost.
+[[unsafe.bindings]]
+name = "CREATE_LIMIT"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 3, period = 60 }
+
+[[unsafe.bindings]]
+name = "CHAT_LIMIT"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 12, period = 60 }
+
+[vars]
+# Sites allowed to use the chat: comma separated, each exactly scheme://host[:port],
+# no path or trailing slash. Add staging domains here if needed.
+ALLOWED_ORIGINS = "https://air.systems,https://www.air.systems"
+BOT_MODEL = "claude-opus-5-5"
+# Seconds before the bot answers a customer. Short, so two quick messages get one answer.
+BOT_REPLY_SECONDS = "2"
+# After a customer asks for John and his phone rings, seconds he has to reply in the
+# chat before the bot tells the customer he is not available.
+TRANSFER_WAIT_SECONDS = "180"
+# In a chat John replied to in the last 15 minutes, seconds the bot waits for him.
+ENGAGED_HANDOFF_SECONDS = "300"
+# "true" rings John's phone for the first question in every new chat, not just transfers.
+RING_ON_FIRST_QUESTION = "false"
+# Most transfer rings across all chats in one hour, so a script cannot ring John all night.
+# First-question rings get their own count with the same cap. Chats John is in always ring. "0" turns it off.
+RINGS_PER_HOUR = "6"
+# Local hours (24h) when "not available" says it is after hours. "21-7" means 9pm to 7am.
+QUIET_HOURS = "21-7"
+TIMEZONE = "America/Los_Angeles"
+# Hard daily caps, counted per local day. "0" disables a cap.
+BOT_DAILY_BUDGET = "300"
+NEW_CHATS_DAILY_BUDGET = "200"
+# Delete a chat this many days after its last message. "0" keeps chats forever.
+RETENTION_DAYS = "30"
+
+# Secrets (set with `npx wrangler secret put NAME`, never commit them):
+#   ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   TELEGRAM_WEBHOOK_SECRET, SETUP_KEY

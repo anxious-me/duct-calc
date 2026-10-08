@@ -1,0 +1,25 @@
+{
+  "name": "svc-chat",
+  "version": "1.2.0",
+  "description": "Website chat for air.systems: customers text John, a clearly labeled Claude bot covers when he does not answer in time.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc",
+    "check": "tsc && wrangler deploy --dry-run --outdir .wrangler/dry",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260927.1",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.142.0"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}
