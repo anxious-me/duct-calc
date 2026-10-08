@@ -93,10 +93,17 @@ Section edges after the fix, measured from the screen edge at 1440 wide:
 | Water heater, gallery, Williams, crossover, coupons | 0 | all at 144 |
 | Blog posts | title 24, image 0, card 94 | title, image and card at 94, text at 144 |
 
-Sideways scroll went to 0 on every page checked. Tablet at 1024: home, city hub and
-city service pages each sit on one edge pair, and the header shows the menu button.
-Phones at 390 are unchanged except the city service pages, which went from running
-24px off the right edge to one centered column.
+Full pass at 1440 over all 120 pages in the sitemap plus 6 blog posts: 126 of 126
+measured, 0 with sideways scroll (every page had 62px before), and 0 with a card or
+band outside its column. Anything an ancestor clips (carousels, map tiles, the
+weather widget's glow) is not counted as outside, since nobody can see it.
+
+Tablet at 1024: home, city hub and city service pages each sit on one edge pair, and
+the header shows the menu button instead of scrolling 378px sideways.
+
+Phones at 390, eight pages across every template: identical before and after, except
+the commercial page and the city service pages, which each went to one centered
+column.
 
 Header checked on the commercial page, the home page and the Sunnyvale city page at
 1100 to 1536: no sideways scroll, buttons inside the row, slide-out opens with links on
@@ -114,6 +121,12 @@ photo behind each line: eyebrow 5.3:1 desktop and 6.0:1 phone, headline 13.1:1 a
   diagnostic, $299 Nights weekends holidays, Same day, 25 years, Commercial HVAC San
   Jose for Small Buildings). That is content, so delete those nine blocks in the
   editor rather than hiding them with CSS.
+• The Bryant Heating and Cooling page (`/bryant-heating-and-cooling/`) has no site
+  footer at all: the server HTML goes straight from the content to the closing tags.
+  That points at the Kadence page setting that disables the footer on that one page.
+• The three Los Gatos service pages (AC, furnace, heat pump) are an older Kadence
+  layout. They line up on desktop with this CSS, but their phone layout steps in and
+  out the way it always has. The other 30 city service pages are on the newer layout.
 • The full-bleed CSS on the `claude/home-page-padding-layout-luj42b` branch (PR #2)
   pushes background sections to the screen edge, which is the opposite of this. It was
   never deployed. Don't ship it on top of this.
