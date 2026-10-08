@@ -7,6 +7,8 @@ import type { Env, RateLimiter } from './types'
 export { Control, Room } from './room'
 
 const MAX_TEXT = 1000
+// Telegram's own limit, so a reply John sends is never cut short on the website.
+const JOHN_MAX_TEXT = 4096
 const ROOM_ID = /^[a-f0-9]{32}$/
 
 export default {
@@ -163,8 +165,9 @@ The AI assistant answers website chats right away. You get a silent copy of ever
 
 Your phone rings when:
 • a customer asks to talk to you (reply within ${waitText(env)}, or the bot tells them you are not available)
-• the bot cannot answer something
+• the bot cannot answer something, or is out of answers for the day
 • a customer writes in a chat you are in (you replied in the last 15 minutes)
+At most ${num(env.RINGS_PER_HOUR, 6)} rings an hour across all chats.
 
 To answer, swipe left on any chat message (or long press and tap Reply) and type. It shows on the website as "John (live reply)". Only text goes through, and editing a sent reply does not change the website.
 
@@ -173,7 +176,7 @@ Reply to a chat with:
 /bot  let the bot help again in that chat
 
 Send anytime:
-/away  you are unavailable: customers who ask for you are told so right away, and nothing rings
+/away  you are unavailable: customers who ask for you are told so right away, /me chats go back to the bot, and nothing rings
 /back  customers who ask for you ring your phone again
 /status  current mode and today's usage`
 }
@@ -215,7 +218,9 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   }
 
   const ctl = control(env)
-  const reply = (t: string) => telegramSend(env, chatId, t)
+  const reply = async (t: string): Promise<void> => {
+    await telegramSend(env, chatId, t)
+  }
   const command = text.split(/\s+/)[0].toLowerCase().replace(/@.*$/, '')
 
   if (command === '/away') {
@@ -232,7 +237,7 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
       ? 'Away mode is on. Customers who ask for you are told you are not available.'
       : `You are on. Customers who ask for you ring your phone, and you have ${waitText(env)} to answer before the bot tells them you are not available.`
     return reply(
-      `${mode}\nToday: ${usage.rooms} new chats, ${usage.bot} bot replies (daily caps ${num(env.NEW_CHATS_DAILY_BUDGET, 200)} and ${num(env.BOT_DAILY_BUDGET, 300)}).`,
+      `${mode}\nToday: ${usage.rooms} new chats, ${usage.bot} bot replies (daily caps ${num(env.NEW_CHATS_DAILY_BUDGET, 200)} and ${num(env.BOT_DAILY_BUDGET, 300)}). Rings this hour: ${usage.rings} (cap ${num(env.RINGS_PER_HOUR, 6)}).`,
     )
   }
   if (command === '/start' || command === '/help') return reply(help(env))
@@ -252,7 +257,7 @@ async function handleTelegram(env: Env, update: TelegramUpdate): Promise<void> {
   // A typo like /mee must never reach the customer as a live reply.
   if (text.startsWith('/')) return reply('Unknown command. Send /help for the list.')
 
-  const ok = await room.fromJohn(text.slice(0, MAX_TEXT))
+  const ok = await room.fromJohn(text.slice(0, JOHN_MAX_TEXT))
   if (!ok) return reply('That chat no longer exists.')
   if (captionOnly) await reply('Sent your caption as text. The photo or file itself does not go to the website chat.')
 }
@@ -280,11 +285,12 @@ async function setup(env: Env, url: URL): Promise<Response> {
   })
   // The command menu is a nicety. It must never fail setup.
   try {
-    await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
+    const menu = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        ...(env.TELEGRAM_CHAT_ID ? { scope: { type: 'chat', chat_id: env.TELEGRAM_CHAT_ID } } : {}),
+        // The README has John set a placeholder chat id of 0 at first. Only scope the menu to a real one.
+        ...(/^-?[1-9]\d*$/.test(env.TELEGRAM_CHAT_ID ?? '') ? { scope: { type: 'chat', chat_id: env.TELEGRAM_CHAT_ID } } : {}),
         commands: [
           { command: 'me', description: 'Reply to a chat: bot stays quiet there' },
           { command: 'bot', description: 'Reply to a chat: let the bot help again' },
@@ -295,6 +301,7 @@ async function setup(env: Env, url: URL): Promise<Response> {
         ],
       }),
     })
+    if (!menu.ok) console.error('setMyCommands', menu.status, (await menu.text()).slice(0, 200))
   } catch (error) {
     console.error('setMyCommands', error)
   }

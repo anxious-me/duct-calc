@@ -107,8 +107,9 @@ const vars = {
   TRANSFER_WAIT_SECONDS: '4',
   ENGAGED_HANDOFF_SECONDS: '3',
   QUIET_HOURS: '0-0',
-  NEW_CHATS_DAILY_BUDGET: '14',
-  BOT_DAILY_BUDGET: '100',
+  NEW_CHATS_DAILY_BUDGET: '80',
+  BOT_DAILY_BUDGET: '300',
+  RINGS_PER_HOUR: '20',
 }
 if (await fetch(BASE + '/').then(() => true).catch(() => false)) {
   console.error(`Something is already listening on port ${PORT}. Stop it first (pkill -f workerd).`)
@@ -378,6 +379,12 @@ const c = (await createChat('/furnace-repair')).body.id
   const call = anthropicCalls[anthropicCalls.length - 1]
   check('the bot is told John was not available, so it takes details', (call.system?.[1]?.text ?? '').includes('John was not available earlier'), JSON.stringify(call.system?.[1]))
   check('the system lines are merged so turns alternate', call.messages.every((m, i) => i === 0 || m.role !== call.messages[i - 1].role), JSON.stringify(call.messages.map((m) => m.role)))
+  check(
+    'lines the system wrote reach the model as notices, never as its own words',
+    call.messages.some((m) => m.role === 'user' && String(m.content).includes('<system_notice>I just sent this chat')) &&
+      !call.messages.some((m) => m.role === 'assistant' && String(m.content).includes("John's phone")),
+    JSON.stringify(call.messages),
+  )
 
   // Two more rings are allowed, then the chat stops ringing John.
   for (let i = 0; i < 2; i++) {
@@ -468,6 +475,49 @@ console.log('\nBot output guards: anything the bot cannot say rings John instead
   await say(chat, 'Is the bot working?')
   bot = await waitBot(chat, after, 'Sorry, the AI assistant is having trouble right now.')
   check('a Claude outage tells the customer and hands the chat to John', bot.text.includes('408-691-5940'), bot.text)
+
+  // Each of these trips one filter pattern on its own.
+  for (const [label, reply] of [
+    ['a hedged guess about John', 'John is probably asleep right now, but I can take your details.'],
+    ['a guess about his job', "He's on a job right now."],
+    ['a license number in plain words', 'Our license number is 1026000.'],
+    ['a CSLB number', 'CSLB 1045678 is on file.'],
+    ['a Premier Dealer claim', 'We are a Bryant Premier Dealer.'],
+    ['the internal mailbox', 'Email new-school@air.systems for a quote.'],
+  ]) {
+    after = (await poll(chat)).messages.length
+    nextReply = { text: reply, stop_reason: 'end_turn' }
+    await say(chat, `Tell me about ${label}`)
+    bot = await waitBot(chat, after, "I can't answer that one here.")
+    check(`the filter blocks ${label}`, !(await poll(chat, after)).messages.some((m) => m.text === reply), bot.text)
+  }
+  after = (await poll(chat)).messages.length
+  nextReply = { text: "No, I'm John Towner's AI assistant for Silicon Valley Comfort.", stop_reason: 'end_turn' }
+  await say(chat, 'Am I talking to a real person?')
+  bot = await waitBot(chat, after, "No, I'm John Towner's AI assistant")
+  check('"I\'m John Towner\'s AI assistant" is allowed through', !!bot)
+}
+
+console.log('\nSafety steps and honest transfers')
+{
+  const s1 = (await createChat('/emergency')).body.id
+  nextReply = { tool: 'transfer_to_john', reason: 'Gas smell' }
+  await say(s1, 'I smell gas in the garage, get John on here now')
+  const safe = await waitBot(s1, 0)
+  check(
+    'someone with a gas smell who asks for John gets the safety steps first',
+    safe.text.startsWith('If you smell gas') && safe.text.includes('911') && safe.text.includes(RINGING),
+    safe.text,
+  )
+
+  const s2 = (await createChat('/claims')).body.id
+  const beforeClaim = telegramSends.length
+  nextReply = { text: "I just sent this chat to John's phone. He'll answer here.", stop_reason: 'end_turn' }
+  await say(s2, 'Can John call me?')
+  const claim = await waitBot(s2, 0)
+  check('a reply that only claims it rang John becomes a real ring', claim.text.startsWith(RINGING), claim.text)
+  const realRing = await waitSend(beforeClaim, (m) => m.text.startsWith('THE CUSTOMER WANTS TO TALK TO YOU') && m.text.endsWith(`ref: ${s2}`), 'the real ring')
+  check('and that ring is loud', realRing.disable_notification === false)
 }
 
 console.log('\n/status, /away and /back')
@@ -475,9 +525,32 @@ console.log('\n/status, /away and /back')
   const sends = telegramSends.length
   await johnSays('/status')
   await waitSends(sends + 1)
-  check('/status reports mode and usage', /You are on\./.test(lastSend().text) && /Today: \d+ new chats, \d+ bot replies/.test(lastSend().text), lastSend().text)
+  check(
+    '/status reports mode, usage and rings',
+    /You are on\./.test(lastSend().text) && /Today: \d+ new chats, \d+ bot replies/.test(lastSend().text) && /Rings this hour: \d+ \(cap 20\)/.test(lastSend().text),
+    lastSend().text,
+  )
+
+  // A chat John took over with /me, to check that /away hands it back to the bot.
+  const f = (await createChat('/me-chat')).body.id
+  nextReply = { text: 'Bot answer for this chat.', stop_reason: 'end_turn' }
+  const sf = telegramSends.length
+  await say(f, 'Hi there')
+  const fcopy = await waitSend(sf, (m) => m.text.endsWith(`ref: ${f}`) && m.text.includes('\nBot: '), 'the copy for the /me chat')
+  await johnSays('/me', fcopy.text)
+  await waitSend(sf, (m) => m.text === 'Bot is off for that chat. All you.', 'the /me reply')
+
+  const sa = telegramSends.length
   await johnSays('/away')
-  await waitSend(sends + 1, (m) => m.text.startsWith('Away mode on.'), 'the /away reply')
+  await waitSend(sa, (m) => m.text.startsWith('Away mode on.'), 'the /away reply')
+
+  const fAfter = (await poll(f)).messages.length
+  const beforeF = telegramSends.length
+  nextReply = { text: 'Away answer in a /me chat.', stop_reason: 'end_turn' }
+  await say(f, 'Anyone there tonight?')
+  const fBot = await waitBot(f, fAfter)
+  check('in away mode a /me chat goes back to the bot', fBot.text === 'Away answer in a /me chat.', fBot.text)
+  check('and nothing rings for it', loudSince(beforeF).length === 0, loudSince(beforeF).map((m) => m.text.slice(0, 50)).join(' | '))
   const d = (await createChat('/contact')).body.id
   const before = telegramSends.length
   nextReply = { tool: 'transfer_to_john', reason: 'Wants John' }
@@ -486,10 +559,32 @@ console.log('\n/status, /away and /back')
   check('in away mode the customer hears right away that John is not available', line.text.startsWith(UNAVAILABLE), line.text)
   const note = await waitSend(before, (m) => m.text.includes('Away mode is on'), 'the away note')
   check('in away mode nothing rings', note.disable_notification === true && loudSince(before).length === 0, loudSince(before).map((m) => m.text.slice(0, 50)).join(' | '))
+  for (let i = 0; i < 2; i++) {
+    const dAfter = (await poll(d)).messages.length
+    nextReply = { tool: 'transfer_to_john', reason: 'Wants John' }
+    await say(d, 'Please, I really need John')
+    const again = await waitBot(d, dAfter)
+    check(`away ask ${i + 2} also hears John is not available`, again.text.startsWith(UNAVAILABLE), again.text)
+  }
+  check('repeated asks in away mode never ring', loudSince(before).length === 0, loudSince(before).map((m) => m.text.slice(0, 50)).join(' | '))
+
   const beforeBack = telegramSends.length
   await johnSays('/back')
   const back = await waitSend(beforeBack, (m) => m.text.startsWith('Back.'), 'the /back reply')
   check('/back says transfers ring again', back.text.includes('ring your phone again') && back.text.includes('4s'), back.text)
+
+  const dAfter = (await poll(d)).messages.length
+  const beforeD = telegramSends.length
+  nextReply = { tool: 'transfer_to_john', reason: 'Wants John now' }
+  await say(d, 'Is John around now?')
+  await waitBot(d, dAfter, RINGING)
+  const dRing = await waitSend(beforeD, (m) => m.text.startsWith('THE CUSTOMER WANTS TO TALK TO YOU') && m.text.endsWith(`ref: ${d}`), 'the ring after /back')
+  check('after /back the same chat can ring John (away answers never used up its rings)', dRing.disable_notification === false)
+
+  const beforeF2 = telegramSends.length
+  await say(f, 'Back again')
+  const fr = await waitSend(beforeF2, (m) => m.text.includes('Customer: Back again'), 'the /me ring after /back')
+  check('after /back a /me chat rings John again', fr.disable_notification === false && fr.text.includes('Bot is off for this chat.'), fr.text)
 }
 
 console.log('\nPhotos, captions and edits from John')
@@ -508,6 +603,12 @@ console.log('\nPhotos, captions and edits from John')
   await rawUpdate({ edited_message: { message_id: 5, chat: { id: JOHN }, text: 'edited text', reply_to_message: { message_id: 1, text: ringA } } })
   await waitSend(sends, (m) => m.text.startsWith('Edits do not reach the website.'), 'the edit note')
   check('an edit is explained and never reaches the customer', !(await poll(a)).messages.some((m) => m.text === 'edited text'))
+
+  const longReply = 'Here is the full rundown. ' + 'The blower motor capacitor reads low. '.repeat(40)
+  const countL = (await poll(a)).messages.length
+  await johnSays(longReply.trim(), ringA)
+  const lr = await waitFor(async () => (await poll(a, countL)).messages.find((m) => m.from === 'john'), 5000, 'the long reply')
+  check("John's long replies arrive in full", lr.text === longReply.trim(), lr.text.length)
 }
 
 console.log('\nOdds and ends')
@@ -540,8 +641,77 @@ console.log('\nOdds and ends')
   nextReply = { text: 'Still here while Telegram is down.', stop_reason: 'end_turn' }
   await say(outage, 'Is anyone there?')
   const still = await waitBot(outage, 0)
-  telegramDown = false
   check('a Telegram outage does not stop the bot', still.text === 'Still here while Telegram is down.', still.text)
+  const outAfter = (await poll(outage)).messages.length
+  nextReply = { tool: 'transfer_to_john', reason: 'Wants John' }
+  await say(outage, 'Can I talk to John?')
+  const unrung = await waitBot(outage, outAfter)
+  check('a ring Telegram rejected is never reported as rung', unrung.text.startsWith("I couldn't reach John's phone just now."), unrung.text)
+  await sleep(5000)
+  telegramDown = false
+  check('no "not available" line follows a ring that never happened', !(await poll(outage, outAfter)).messages.some((m) => m.text.startsWith(UNAVAILABLE)))
+
+  // Several long messages at once: the copy to John still carries the bot's answer.
+  const many = (await createChat('/many')).body.id
+  const beforeMany = telegramSends.length
+  nextReply = { text: 'One answer for all of it.', stop_reason: 'end_turn' }
+  await Promise.all([1, 2, 3, 4].map((i) => say(many, `Part ${i}: ` + 'details '.repeat(115))))
+  const manyCopy = await waitSend(beforeMany, (m) => m.text.endsWith(`ref: ${many}`) && m.text.includes('Part '), 'the copy for four long messages')
+  check("a copy full of customer text still shows the bot's answer", manyCopy.text.includes('\nBot: One answer for all of it.'), manyCopy.text.slice(-200))
+}
+
+console.log('\nA chat at its bot limit')
+{
+  const e = (await createChat('/limits')).body.id
+  for (let i = 1; i <= 25; i++) {
+    const after = (await poll(e)).messages.length
+    nextReply = { text: `Answer number ${i}.`, stop_reason: 'end_turn' }
+    await say(e, `Question ${i}`)
+    await waitBot(e, after, `Answer number ${i}.`)
+  }
+  const last = (await poll(e)).messages.at(-1)
+  check('the 25th answer says the bot is done in this chat', last.text.includes('your messages go straight to John'), last.text)
+
+  const sa = telegramSends.length
+  await johnSays('/away')
+  await waitSend(sa, (m) => m.text.startsWith('Away mode on.'), 'the /away reply')
+  const beforeE = telegramSends.length
+  const afterE = (await poll(e)).messages.length
+  await say(e, 'One more question')
+  const limitLine = await waitBot(e, afterE)
+  check(
+    'past the limit, in away mode, the customer hears John is not available',
+    limitLine.text.startsWith("I can't answer any more in this chat right now. " + UNAVAILABLE),
+    limitLine.text,
+  )
+  await say(e, 'And another one')
+  await waitSend(beforeE, (m) => m.text.includes('Customer: And another one'), 'the follow-up copy')
+  const eMsgs = (await poll(e, afterE)).messages
+  check('the customer is told once, not after every message', eMsgs.filter((m) => m.from === 'bot').length === 1, JSON.stringify(eMsgs.map((m) => m.text.slice(0, 40))))
+  check('nothing rings for a capped chat in away mode', loudSince(beforeE).length === 0, loudSince(beforeE).map((m) => m.text.slice(0, 50)).join(' | '))
+  const sb = telegramSends.length
+  await johnSays('/back')
+  await waitSend(sb, (m) => m.text.startsWith('Back.'), 'the /back reply')
+}
+
+console.log('\nHourly ring cap')
+{
+  let capped = null
+  let rang = 0
+  for (let i = 0; i < 25 && !capped; i++) {
+    const r = (await createChat('/ring-cap')).body.id
+    nextReply = { tool: 'transfer_to_john', reason: 'Cap test' }
+    const before = telegramSends.length
+    await say(r, 'Get John please')
+    const line = await waitBot(r, 0)
+    if (line.text.startsWith("I couldn't reach John's phone just now.")) capped = { before }
+    else rang++
+  }
+  check('the hourly ring cap stops rings across chats', !!capped, rang)
+  if (capped) {
+    const note = await waitSend(capped.before, (m) => m.text.includes('times this hour'), 'the cap note')
+    check('over the cap nothing rings, and John gets a silent note', note.disable_notification === true && loudSince(capped.before).length === 0)
+  }
 }
 
 console.log('\nNew chat limits')
@@ -554,7 +724,7 @@ console.log('\nNew chat limits')
   }
   check('one visitor gets rate limited after 3 new chats a minute', !!perIp && perIp.startsWith('Too many new chats'), perIp)
   let daily = null
-  for (let i = 0; i < 6 && !daily; i++) {
+  for (let i = 0; i < 80 && !daily; i++) {
     const r = await createChat()
     if (r.status === 429) daily = r.body.error
   }

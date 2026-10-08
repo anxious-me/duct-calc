@@ -53,6 +53,8 @@ TRANSFER_WAIT_SECONDS = "180"
 ENGAGED_HANDOFF_SECONDS = "300"
 # "true" rings John's phone for the first question in every new chat, not just transfers.
 RING_ON_FIRST_QUESTION = "false"
+# Most rings across all chats in one hour, so a script cannot ring John all night. "0" turns the cap off.
+RINGS_PER_HOUR = "6"
 # Local hours (24h) when "not available" says it is after hours. "21-7" means 9pm to 7am.
 QUIET_HOURS = "21-7"
 TIMEZONE = "America/Los_Angeles"

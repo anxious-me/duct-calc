@@ -17,25 +17,46 @@ export interface TelegramUpdate {
 
 const MAX_LEN = 4000
 
-/** Sends a plain text message to a Telegram chat. Never throws: a Telegram hiccup must not break the website chat. */
-export async function telegramSend(env: Env, chatId: string, text: string, silent = false): Promise<void> {
-  if (!env.TELEGRAM_BOT_TOKEN || !chatId) return
+/**
+ * Sends a plain text message to a Telegram chat. Never throws: a Telegram hiccup must not
+ * break the website chat. Returns whether Telegram accepted it, so a ring that never
+ * reached John's phone is never reported to the customer as rung. A short 429 is retried once.
+ */
+export async function telegramSend(env: Env, chatId: string, text: string, silent = false): Promise<boolean> {
+  if (!env.TELEGRAM_BOT_TOKEN || !chatId) return false
   const base = env.TELEGRAM_API_BASE || 'https://api.telegram.org'
-  try {
-    const res = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text.slice(0, MAX_LEN),
-        disable_notification: silent,
-        link_preview_options: { is_disabled: true },
-      }),
-    })
-    if (!res.ok) console.error('Telegram send failed', res.status, (await res.text()).slice(0, 200))
-  } catch (error) {
-    console.error('Telegram send failed', error instanceof Error ? error.message : String(error))
+  const body = JSON.stringify({
+    chat_id: chatId,
+    text: text.slice(0, MAX_LEN),
+    disable_notification: silent,
+    link_preview_options: { is_disabled: true },
+  })
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(`${base}/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      })
+      if (res.ok) return true
+      const detail = (await res.text()).slice(0, 300)
+      console.error('Telegram send failed', res.status, detail)
+      if (res.status !== 429 || attempt > 0) return false
+      // Telegram says how long to back off. Only wait when it is short: a long sleep would hold the chat.
+      let wait = 0
+      try {
+        wait = Number((JSON.parse(detail) as { parameters?: { retry_after?: number } }).parameters?.retry_after) || 0
+      } catch {
+        wait = 0
+      }
+      if (wait <= 0 || wait > 5) return false
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000))
+    } catch (error) {
+      console.error('Telegram send failed', error instanceof Error ? error.message : String(error))
+      return false
+    }
   }
+  return false
 }
 
 export const sendToJohn = (env: Env, text: string, silent = false) =>

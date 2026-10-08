@@ -20,24 +20,38 @@ export const CHAT_FULL_MESSAGE =
 /** What /me or /bot did to a chat. */
 export type BotSwitch = 'gone' | 'off' | 'on' | 'capped'
 
-/** Why the bot is getting John: the customer asked, the reply was blocked, or Claude failed. */
-type Why = 'asked' | 'safe' | 'error'
-/** What happened when it tried. */
-type Outcome = 'ringing' | 'pending' | 'unavailable' | 'enough'
+/** Why the bot is getting John: the customer asked, the reply was blocked, Claude failed, or the bot is out of answers. */
+type Why = 'asked' | 'safe' | 'error' | 'limit'
+/** What happened when it tried. unreached: Telegram did not take the ring, or the hourly ring cap was hit. */
+type Outcome = 'ringing' | 'pending' | 'unavailable' | 'enough' | 'unreached'
+
+/** Gas, carbon monoxide, fire or burning. Narrow on purpose: a plain "gas furnace" question is not an emergency. */
+const DANGER =
+  /\b(smell(s|ed|ing)?( like| of)? gas|gas (smell|leak|odor|odour)|leaking gas|carbon monoxide|co (alarm|detector)|flames?|(a|on) fire|smoke|smoky|smoking|burning|sparks?|sparking)\b/i
+const SAFETY_LINE =
+  'If you smell gas or a carbon monoxide alarm is going off, get everyone outside now and call 911 or PG&E at 1-800-743-5000. If you see flames or heavy smoke, get everyone out and call 911. For a burning smell or sparks, turn the system off at the thermostat and the breaker. '
 
 /**
  * The customer-facing lines around getting John. Written here, not by the model, so they
- * are always true: the bot only says John's phone rang when it did, and only says he is
- * not available when he was asked and did not pick up (or sent /away).
+ * are always true: the bot only says John's phone rang when Telegram took the ring, and
+ * only says he is not available when it rang and he did not pick up (or he sent /away).
  */
 function johnLine(why: Why | null, outcome: Outcome, night: boolean): string {
   const lead =
-    why === 'safe' ? "I can't answer that one here. " : why === 'error' ? 'Sorry, the AI assistant is having trouble right now. ' : ''
+    why === 'safe'
+      ? "I can't answer that one here. "
+      : why === 'error'
+        ? 'Sorry, the AI assistant is having trouble right now. '
+        : why === 'limit'
+          ? "I can't answer any more in this chat right now. "
+          : ''
+  const details = "Leave your name, phone number, and what's going on, and he'll get back to you as soon as he can."
   const middle = {
     ringing: "I just sent this chat to John's phone. If he's available he'll answer right here.",
     pending: "John's phone already has this chat. If he's available he'll answer right here.",
-    unavailable: `${night ? "It's after hours and John is probably asleep, so he isn't" : "John isn't"} available right now. Leave your name, phone number, and what's going on, and he'll get back to you as soon as he can.`,
+    unavailable: `${night ? "It's after hours and John is probably asleep, so he isn't" : "John isn't"} available right now. ${details}`,
     enough: 'John already has this chat and will see everything here.',
+    unreached: `I couldn't reach John's phone just now. ${details}`,
   }[outcome]
   return `${lead}${middle} If it can't wait, call or text him at ${PHONE}.`
 }
@@ -98,35 +112,53 @@ export class Room extends DurableObject<Env> {
   /**
    * A customer message. While the bot is handling the chat John's phone stays quiet:
    * the bot answers right away and John gets a silent copy. His phone only rings when
-   * he is in the conversation (he replied in the last 15 minutes, or sent /me), when
-   * nobody else can answer, or when the customer asks for him (see getJohn).
+   * he is in the conversation (he replied in the last 15 minutes, or sent /me), or when
+   * the customer needs him and the bot cannot help (see getJohn).
    */
   async fromCustomer(text: string): Promise<{ ok: boolean; error?: string }> {
+    // Ask Control first. After this only storage work runs until the message and its
+    // handoff are saved together, so a failed call stores nothing and nothing slips in.
+    const status = await this.control().status(num(this.env.BOT_DAILY_BUDGET, 300))
     const { meta, msgs } = await this.load()
     if (!meta) return { ok: false, error: UNKNOWN_CHAT }
     if (msgs.filter((m) => m.from === 'customer').length >= MAX_CUSTOMER_MESSAGES) {
       return { ok: false, error: CHAT_FULL_MESSAGE }
     }
-    await this.append('customer', text)
-
-    // Other requests can run while we wait on Control, so read meta again afterwards.
-    const status = await this.control().status(num(this.env.BOT_DAILY_BUDGET, 300))
-    const current = await this.ctx.storage.get<RoomMeta>('meta')
-    // The retention alarm deleted the chat in that window. The widget starts a new one on 404.
-    if (!current) return { ok: false, error: UNKNOWN_CHAT }
 
     const now = Date.now()
-    const capped = current.botReplies >= MAX_BOT_REPLIES
-    const canBot = !current.botOff && !capped && !status.botSpent
-    // /away means John is not around, so even a chat he was in goes back to the bot.
-    const live = !status.away && (current.botOff || now - current.johnLastAt < ENGAGED_WINDOW_MS)
+    const all: ChatMessage[] = [...msgs, { n: msgs.length + 1, from: 'customer', text, ts: now }]
+    // /away means John is not around, so even a chat he took over with /me goes back to the bot.
+    const botOff = meta.botOff && !status.away
+    const capped = meta.botReplies >= MAX_BOT_REPLIES
+    const canBot = !botOff && !capped && !status.botSpent
+    const live = !status.away && (botOff || now - meta.johnLastAt < ENGAGED_WINDOW_MS)
     const delay = !canBot ? null : live ? num(this.env.ENGAGED_HANDOFF_SECONDS, 300) : num(this.env.BOT_REPLY_SECONDS, 2)
-    // Commit the handoff before talking to Telegram. If Telegram is down the
-    // customer still gets the bot, which is the whole point of the bot.
-    await this.saveMeta({ ...current, lastActivityAt: now, handoffAt: delay === null ? null : now + delay * 1000, handoffTries: 0 })
+    // Commit the message and the handoff before talking to Telegram. If Telegram is
+    // down the customer still gets the bot, which is the whole point of the bot.
+    const saved: RoomMeta = { ...meta, lastActivityAt: now, handoffAt: delay === null ? null : now + delay * 1000, handoffTries: 0 }
+    await this.saveMeta(saved, all)
 
     if (!live && canBot) return { ok: true }
-    const footer = current.botOff
+
+    if (!live && !botOff) {
+      // The bot is out of answers here (chat cap or daily budget) and John is not in the
+      // chat. Treat it like a transfer: at most one ring per wait, never under /away, and
+      // the customer hears what happened. Once told, their follow-ups reach John silently.
+      const told =
+        typeof meta.transferUntil === 'number' || (meta.unavailableAt ?? 0) > meta.johnLastAt || (meta.transfers ?? 0) >= MAX_TRANSFERS
+      if (!told) {
+        await this.getJohn(saved, all, 'limit', '', status.away)
+        return { ok: true }
+      }
+      await sendToJohn(
+        this.env,
+        withRef(`${header(meta, text)}: the bot is at its limit here, so this one is yours.\nCustomer: ${scrubRef(text)}${pageLine(meta)}\n\nReply to answer.`, meta.roomId),
+        true,
+      )
+      return { ok: true }
+    }
+
+    const footer = botOff
       ? 'Bot is off for this chat. Reply to answer.'
       : capped
         ? 'The bot has reached its limit for this chat. Reply to answer.'
@@ -135,7 +167,7 @@ export class Room extends DurableObject<Env> {
           : `Bot answers in ${delay}s unless you reply first. Swipe to reply.`
     await sendToJohn(
       this.env,
-      withRef(`${header(current, text)}${live ? ' (you are in this chat)' : ''}\nCustomer: ${scrubRef(text)}${pageLine(current)}\n\n${footer}`, current.roomId),
+      withRef(`${header(meta, text)} (you are in this chat)\nCustomer: ${scrubRef(text)}${pageLine(meta)}\n\n${footer}`, meta.roomId),
     )
     return { ok: true }
   }
@@ -194,11 +226,15 @@ export class Room extends DurableObject<Env> {
       if (tries > MAX_HANDOFF_TRIES) {
         console.error('Bot handoff failed repeatedly, leaving the chat for John')
         await this.ctx.storage.put('meta', { ...meta, handoffAt: null, handoffTries: 0 })
-        // Loud: the customer is waiting and nobody has answered.
+        // Loud, because the customer is waiting and nobody has answered. Quiet under /away.
         if (lastSpeaker(msgs) === 'customer' && !meta.botOff) {
+          const quiet = await this.control()
+            .isAway()
+            .catch(() => false)
           await sendToJohn(
             this.env,
             withRef(`${header(meta)}: the bot could not answer after several tries, so the customer has no reply yet.\n\n${transcript(msgs)}\n\nReply to answer them.`, meta.roomId),
+            quiet,
           )
         }
       } else {
@@ -257,13 +293,15 @@ export class Room extends DurableObject<Env> {
       if (m && m.handoffAt === due) await this.saveMeta({ ...m, handoffAt: null, handoffTries: 0 })
     }
 
-    if (meta.botOff || meta.botReplies >= MAX_BOT_REPLIES || lastSpeaker(msgs) !== 'customer') return consume()
+    // Away mode hands even /me chats back to the bot.
+    const away = await this.control().isAway()
+    if ((meta.botOff && !away) || meta.botReplies >= MAX_BOT_REPLIES || lastSpeaker(msgs) !== 'customer') return consume()
     if (!(await this.control().takeBotCall(num(this.env.BOT_DAILY_BUDGET, 300)))) {
-      console.error('Daily bot budget reached, leaving the chat for John')
-      await sendToJohn(
-        this.env,
-        withRef(`${header(meta)}: the bot hit its daily budget before it could answer, so the customer has no reply yet.\n\n${transcript(msgs)}\n\nReply to answer them.`, meta.roomId),
-      )
+      console.error('Daily bot budget reached, handing the chat to John')
+      const latest = await this.load()
+      if (latest.meta && latest.meta.handoffAt === due && lastSpeaker(latest.msgs) === 'customer') {
+        return this.getJohn(latest.meta, latest.msgs, 'limit', '', away)
+      }
       return consume()
     }
 
@@ -280,7 +318,7 @@ export class Room extends DurableObject<Env> {
     if (!latest.meta || latest.meta.handoffAt !== due) return
     if (
       !result ||
-      latest.meta.botOff ||
+      (latest.meta.botOff && !away) ||
       lastSpeaker(latest.msgs) !== 'customer' ||
       // Something new from the customer or John means this answer is stale. A system line does not.
       latest.msgs.slice(answeredUpTo).some((m) => !m.sys)
@@ -289,74 +327,104 @@ export class Room extends DurableObject<Env> {
     }
 
     if (result.kind !== 'ok') {
-      return this.getJohn(latest.meta, latest.msgs, result.kind === 'transfer' ? 'asked' : result.kind, result.kind === 'transfer' ? result.reason : '')
+      return this.getJohn(latest.meta, latest.msgs, result.kind === 'transfer' ? 'asked' : result.kind, result.kind === 'transfer' ? result.reason : '', away)
     }
 
     // Only real answers count toward the per-chat cap. Canned lines do not.
     const botReplies = latest.meta.botReplies + 1
     const text = botReplies >= MAX_BOT_REPLIES ? result.text + CAP_NOTE : result.text
     const asked = waitingCustomer(latest.msgs)
-    const firstQuestion = latest.meta.botReplies === 0 && latest.meta.johnLastAt === 0 && !latest.meta.transfers
+    const firstQuestion =
+      latest.meta.botReplies === 0 && latest.meta.johnLastAt === 0 && !latest.meta.transfers && !latest.meta.unavailableAt
     const now = Date.now()
     await this.saveMeta({ ...latest.meta, botReplies, handoffAt: null, handoffTries: 0 }, [
       ...latest.msgs,
       { n: latest.msgs.length + 1, from: 'bot', text, ts: now },
     ])
-    // Silent unless John asked to hear about every new customer.
-    const ring = firstQuestion && this.env.RING_ON_FIRST_QUESTION === 'true'
-    await sendToJohn(
-      this.env,
-      withRef(
-        `${header(latest.meta, asked.join(' '))}${pageLine(latest.meta)}\n${asked.map((t) => `Customer: ${scrubRef(t)}`).join('\n')}\nBot: ${text.slice(0, 2000)}\n\nReply to jump in, or reply /me to turn the bot off for this chat.`,
-        latest.meta.roomId,
-      ),
-      !ring,
-    )
+    // Silent unless John asked to hear about every new customer (and is not away).
+    const ring = firstQuestion && this.env.RING_ON_FIRST_QUESTION === 'true' && !away
+    const head = `${header(latest.meta, asked.join(' '))}${pageLine(latest.meta)}\n`
+    const tail = `\nBot: ${text.slice(0, 2000)}\n\nReply to jump in, or reply /me to turn the bot off for this chat.`
+    // Keep the newest customer text. The bot's answer and the footer must always survive Telegram's length limit.
+    let quoted = asked.map((t) => `Customer: ${clip(scrubRef(t), 500)}`).join('\n')
+    const room = COPY_BUDGET - head.length - tail.length
+    if (quoted.length > room) quoted = `...${quoted.slice(-(room - 3))}`
+    await sendToJohn(this.env, withRef(head + quoted + tail, latest.meta.roomId), !ring)
   }
 
   /**
    * Gets John for the customer: rings his phone once and gives him TRANSFER_WAIT_SECONDS
    * to reply in the chat. If he does not, transferTimedOut tells the customer he is not
    * available. /away skips the ring and says so right away. Used when the customer asks
-   * for John and when the bot could not answer, so nobody is ever left talking to a wall.
+   * for John, when the bot could not answer and when it is out of answers, so nobody is
+   * ever left talking to a wall. The ring goes out before anything is saved, so the
+   * customer is only told it rang when Telegram took it, and the commit uses a fresh read.
    */
-  private async getJohn(meta: RoomMeta, msgs: ChatMessage[], why: Why, reason: string): Promise<void> {
-    const now = Date.now()
-    const away = await this.control().isAway()
+  private async getJohn(meta: RoomMeta, msgs: ChatMessage[], why: Why, reason: string, away: boolean): Promise<void> {
     const transfers = meta.transfers ?? 0
-    const outcome: Outcome =
+    let outcome: Outcome =
       typeof meta.transferUntil === 'number' ? 'pending' : away ? 'unavailable' : transfers >= MAX_TRANSFERS ? 'enough' : 'ringing'
-    const line = johnLine(why, outcome, inQuietHours(this.env))
-    const next: RoomMeta = {
-      ...meta,
-      handoffAt: null,
-      handoffTries: 0,
-      transfers: outcome === 'ringing' || outcome === 'unavailable' ? transfers + 1 : transfers,
-      transferUntil: outcome === 'ringing' ? now + num(this.env.TRANSFER_WAIT_SECONDS, 180) * 1000 : (meta.transferUntil ?? null),
-      unavailableAt: outcome === 'unavailable' ? now : meta.unavailableAt,
-    }
-    await this.saveMeta(next, [...msgs, { n: msgs.length + 1, from: 'bot', text: line, ts: now }])
-
-    const what =
-      why === 'asked' ? 'the customer wants to talk to you' : why === 'safe' ? 'the bot could not answer this one' : 'the bot is having trouble (Claude error)'
+    const what = {
+      asked: 'the customer wants to talk to you',
+      safe: 'the bot could not answer this one',
+      error: 'the bot is having trouble (Claude error)',
+      limit: 'the bot is at its limit (chat cap or daily budget) and cannot answer',
+    }[why]
     const needs = reason ? `\nNeeds: ${scrubRef(reason)}` : ''
     const recent = `${pageLine(meta)}\n\n${transcript(msgs)}`
+    const danger = DANGER.test(waitingCustomer(msgs).join(' '))
+    const ringCap = num(this.env.RINGS_PER_HOUR, 6)
+
+    let capHit = false
     if (outcome === 'ringing') {
-      await sendToJohn(
-        this.env,
-        withRef(
-          `${what.toUpperCase()} (chat ${chatTag(meta.roomId)})${needs}${recent}\n\nReply to this message to talk to them here. If you do not reply within ${waitText(this.env)}, the bot tells them you are not available.`,
-          meta.roomId,
-        ),
-      )
+      if (!(await this.control().takeRing(ringCap))) {
+        capHit = true
+        outcome = 'unreached'
+      } else {
+        const rang = await sendToJohn(
+          this.env,
+          withRef(
+            `${what.toUpperCase()} (chat ${chatTag(meta.roomId)})${needs}${recent}\n\nReply to this message to talk to them here. If you do not reply within ${waitText(this.env)}, the bot tells them you are not available.`,
+            meta.roomId,
+          ),
+        )
+        if (!rang) outcome = 'unreached'
+      }
+    }
+
+    // The ring went out over the network, so the chat may have moved on. Commit against what is stored now.
+    const cur = await this.load()
+    if (!cur.meta) return
+    const now = Date.now()
+    const rang = outcome === 'ringing'
+    const johnStepped = cur.meta.johnLastAt !== meta.johnLastAt || (cur.meta.botOff && !meta.botOff)
+    const ours = cur.meta.handoffAt === meta.handoffAt
+    const next: RoomMeta = {
+      ...cur.meta,
+      handoffAt: ours ? null : cur.meta.handoffAt,
+      handoffTries: ours ? 0 : cur.meta.handoffTries,
+      transfers: rang ? (cur.meta.transfers ?? 0) + 1 : cur.meta.transfers,
+      transferUntil: rang && !johnStepped ? now + num(this.env.TRANSFER_WAIT_SECONDS, 180) * 1000 : (cur.meta.transferUntil ?? null),
+      unavailableAt: outcome === 'unavailable' || outcome === 'unreached' ? now : cur.meta.unavailableAt,
+    }
+    // If John already answered while his phone was ringing, his reply speaks for itself.
+    const line = (danger ? SAFETY_LINE : '') + johnLine(why, outcome, inQuietHours(this.env))
+    const post = !(rang && johnStepped)
+    await this.saveMeta(next, post ? [...cur.msgs, { n: cur.msgs.length + 1, from: 'bot', text: line, ts: now, canned: true }] : undefined)
+
+    if (rang) return
+    if (outcome === 'unreached' && !capHit) {
+      // Telegram refused the ring, so a note to John would most likely fail too.
+      console.error('Ring to John failed, the customer was asked to leave details')
       return
     }
-    const told =
-      outcome === 'unavailable'
-        ? 'Away mode is on, so the bot told them you are not available.'
-        : outcome === 'pending'
-          ? 'Your phone already rang for this chat.'
-          : 'This chat already rang your phone the most times allowed, so it did not ring again.'
+    const told = {
+      unavailable: 'Away mode is on, so the bot told them you are not available.',
+      pending: 'Your phone already rang for this chat.',
+      enough: 'This chat already rang your phone the most times allowed, so it did not ring again.',
+      unreached: `Your phone already rang ${ringCap} times this hour, the most allowed, so this did not ring. The customer was asked to leave their details.`,
+      ringing: '',
+    }[outcome]
     await sendToJohn(this.env, withRef(`${header(meta)}: ${what}. ${told}${needs}${recent}\n\nReply to answer them.`, meta.roomId), true)
   }
 
@@ -372,7 +440,9 @@ export class Room extends DurableObject<Env> {
     } else if (transfers >= MAX_TRANSFERS) {
       lines.push(`John has already been notified about this chat. Do not call transfer_to_john again. Give them ${PHONE} and collect their details for him.`)
     } else if (meta.unavailableAt) {
-      lines.push('John was not available earlier in this chat. Collect their details for him. If they still want John, you may try transfer_to_john once more.')
+      lines.push(
+        'John was not available earlier in this chat. Collect their details for him. Do not repeat why he is unavailable or guess when he will reply. If they still want John, you may try transfer_to_john once more.',
+      )
     }
     if (meta.johnLastAt && now - meta.johnLastAt < ENGAGED_WINDOW_MS) {
       lines.push('John replied in this chat in the last 15 minutes but has not answered the latest message.')
@@ -380,6 +450,11 @@ export class Room extends DurableObject<Env> {
     return lines.join(' ')
   }
 }
+
+/** Room left for a silent copy's text before withRef's own cut. */
+const COPY_BUDGET = 3900
+
+const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}...` : text)
 
 function header(meta: RoomMeta, text = ''): string {
   return `Chat ${chatTag(meta.roomId)}${text && looksUrgent(text) ? ' (might be urgent)' : ''}`
@@ -412,8 +487,7 @@ function transcript(msgs: ChatMessage[], count = 6): string {
     .slice(-count)
     .map((m) => {
       const who = m.from === 'customer' ? 'Customer' : m.from === 'john' ? 'You' : 'Bot'
-      const text = scrubRef(m.text)
-      return `${who}: ${text.length > 500 ? `${text.slice(0, 500)}...` : text}`
+      return `${who}: ${clip(scrubRef(m.text), 500)}`
     })
     .join('\n')
 }
@@ -436,31 +510,35 @@ export class Control extends DurableObject<Env> {
 
   /** Counts one bot call against today's budget. False means the budget is spent. */
   takeBotCall(budget: number): Promise<boolean> {
-    return this.take('bot', budget)
+    return this.take('bot', budget, localDay(this.env))
   }
 
   /** Counts one new chat against today's budget. False means the budget is spent. */
   takeNewRoom(budget: number): Promise<boolean> {
-    return this.take('rooms', budget)
+    return this.take('rooms', budget, localDay(this.env))
   }
 
-  async usage(): Promise<{ day: string; bot: number; rooms: number }> {
+  /** Counts one ring of John's phone against this hour's cap, across all chats. False means the cap is hit. */
+  takeRing(limit: number): Promise<boolean> {
+    return this.take('ring', limit, localHour(this.env))
+  }
+
+  async usage(): Promise<{ day: string; bot: number; rooms: number; rings: number }> {
     const day = localDay(this.env)
-    const [bot, rooms] = await Promise.all([this.count('bot', day), this.count('rooms', day)])
-    return { day, bot, rooms }
+    const [bot, rooms, rings] = await Promise.all([this.count('bot', day), this.count('rooms', day), this.count('ring', localHour(this.env))])
+    return { day, bot, rooms, rings }
   }
 
-  private async count(kind: string, day: string): Promise<number> {
+  private async count(kind: string, period: string): Promise<number> {
     const cur = await this.ctx.storage.get<{ day: string; count: number }>(`count:${kind}`)
-    return cur?.day === day ? cur.count : 0
+    return cur?.day === period ? cur.count : 0
   }
 
-  private async take(kind: string, budget: number): Promise<boolean> {
+  private async take(kind: string, budget: number, period: string): Promise<boolean> {
     if (budget <= 0) return true
-    const day = localDay(this.env)
-    const count = await this.count(kind, day)
+    const count = await this.count(kind, period)
     if (count >= budget) return false
-    await this.ctx.storage.put(`count:${kind}`, { day, count: count + 1 })
+    await this.ctx.storage.put(`count:${kind}`, { day: period, count: count + 1 })
     return true
   }
 }
@@ -487,18 +565,26 @@ export function localDay(env: Env, now = new Date()): string {
   }
 }
 
+/** This hour in John's time zone, as YYYY-MM-DDTHH, for hourly caps. */
+export function localHour(env: Env, now = new Date()): string {
+  return `${localDay(env, now)}T${String(hourIn(env, now)).padStart(2, '0')}`
+}
+
+function hourIn(env: Env, now: Date): number {
+  try {
+    return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: timeZone(env) }).format(now))
+  } catch (error) {
+    console.error('Bad TIMEZONE, using America/Los_Angeles', error instanceof Error ? error.message : String(error))
+    return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/Los_Angeles' }).format(now))
+  }
+}
+
 /** QUIET_HOURS is "start-end" in 24h local time, e.g. "21-7". */
 export function inQuietHours(env: Env, now = new Date()): boolean {
   const match = env.QUIET_HOURS?.match(/^(\d{1,2})-(\d{1,2})$/)
   if (!match) return false
   const start = Number(match[1])
   const end = Number(match[2])
-  let hour: number
-  try {
-    hour = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: timeZone(env) }).format(now))
-  } catch (error) {
-    console.error('Bad TIMEZONE, using America/Los_Angeles', error instanceof Error ? error.message : String(error))
-    hour = Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hourCycle: 'h23', timeZone: 'America/Los_Angeles' }).format(now))
-  }
+  const hour = hourIn(env, now)
   return start <= end ? hour >= start && hour < end : hour >= start || hour < end
 }

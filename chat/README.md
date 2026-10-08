@@ -25,14 +25,19 @@ When John's phone rings (everything else is a silent copy):
 |---|---|
 | Customer asks for John and says yes | Phone rings. John has 3 minutes to reply in the chat, then the bot says he is not available |
 | The bot cannot answer (blocked reply, Claude down) | Phone rings, same 3 minutes |
-| Daily bot budget spent, or the chat hit its bot limit | Every customer message rings John |
+| Daily bot budget spent, or the chat hit its bot limit | Phone rings once, same 3 minutes; later messages are silent copies |
 | Customer writes in a chat John replied to in the last 15 min | Phone rings, bot answers after 5 minutes if John does not |
-| John replied `/me` to that chat | Phone rings for every message, bot stays out |
-| John sent `/away` | Nothing rings. Customers who ask for him are told he is not available |
+| John replied `/me` to that chat | Phone rings for every message, bot stays out (until `/away`) |
+| John sent `/away` | Nothing rings. Customers who ask for him are told he is not available, and `/me` chats go back to the bot |
 | Anyone else | Bot answers in about 2 seconds, John gets a silent copy |
 
 Set `RING_ON_FIRST_QUESTION = "true"` in `wrangler.toml` to also ring for the
-first question in every new chat. One chat can ring John at most 3 times.
+first question in every new chat. One chat can ring John at most 3 times, and all
+chats together at most `RINGS_PER_HOUR` (6) times an hour. If a ring is over the
+cap or Telegram does not take it, the customer is told John could not be reached
+and asked for their details; the chat never claims his phone rang when it did not.
+If a customer who asks for John mentions gas, carbon monoxide, fire, smoke or
+sparks, the safety steps go in front of the transfer line.
 
 The bot is labeled "AI assistant (bot)" everywhere. It never pretends to be John
 and never guesses what he is doing. The "not available" line is written by the
@@ -95,6 +100,8 @@ and an Anthropic API key (pay per use, pennies per chat). You also need Node.js
    - Send `/id` to your bot in Telegram. It replies with your chat id.
    - `npx wrangler secret put TELEGRAM_CHAT_ID` and paste that number.
    - Send `/help` to the bot. If it answers with the rundown, you are wired up.
+   - Visit the `/setup` URL once more so the command menu is installed for your
+     chat (do this before deleting `SETUP_KEY`).
    - Optional: `npx wrangler secret delete SETUP_KEY` turns the `/setup` URL off
      now that the webhook is registered.
    - Upgrading from an earlier version of this chat? Visit the `/setup` URL once
@@ -154,13 +161,16 @@ npm run smoke   # starts wrangler dev against mock Claude and Telegram servers a
 
 ## Limits built in
 
-- 1,000 characters per message, 60 customer messages and 25 bot replies per
-  chat. When the bot hits its limit it says so once and leaves the chat to John.
+- 1,000 characters per customer message (John's replies can be up to 4,096),
+  60 customer messages and 25 bot replies per chat. When the bot hits its limit
+  it says so once and hands the chat to John.
 - Per IP address: 3 new chats and 12 messages per minute (Cloudflare rate
   limiting, best effort per location).
 - Per day, in Pacific time: 200 new chats and 300 bot replies
   (`NEW_CHATS_DAILY_BUDGET` and `BOT_DAILY_BUDGET`, counting Claude calls). Past
-  the bot cap, every customer message rings John instead. `/status` shows today's numbers.
+  the bot cap, a customer's next message rings John once like a transfer.
+- Per hour: 6 rings of John's phone across all chats (`RINGS_PER_HOUR`).
+  `/status` shows today's numbers and this hour's rings.
 - Chats are deleted 30 days after their last message (`RETENTION_DAYS`, `0` keeps
   them forever). The widget starts a fresh chat after 14 quiet days, and the
   customer can start one any time with the plus button in the chat header.

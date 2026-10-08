@@ -102,6 +102,7 @@
     '}' +
     '@media print{:host{display:none!important}}' +
     '@media (prefers-reduced-motion:reduce){.bubble{transition:none}.bubble:hover{transform:none}}' +
+    '.sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}' +
     '</style>' +
     '<div class="panel" id="svc-chat-panel" role="dialog" aria-label="Chat with Silicon Valley Comfort">' +
     '  <div class="head">' +
@@ -116,7 +117,8 @@
     '  <form class="form"><textarea rows="1" placeholder="Type a message..." aria-label="Message" enterkeyhint="send"></textarea><button class="send" type="submit" aria-label="Send">' + svgSend() + '</button></form>' +
     '</div>' +
     '<div class="teaser" role="button" tabindex="0">Questions? Ask our AI assistant.</div>' +
-    '<button class="bubble" type="button" aria-label="Open chat" aria-expanded="false" aria-controls="svc-chat-panel">' + svgChat() + '<span class="badge" aria-hidden="true"></span></button>'
+    '<button class="bubble" type="button" aria-label="Open chat" aria-expanded="false" aria-controls="svc-chat-panel">' + svgChat() + '<span class="badge" aria-hidden="true"></span></button>' +
+    '<div class="sr" role="status" aria-live="polite" aria-atomic="true"></div>'
 
   var $ = function (sel) { return root.querySelector(sel) }
   var panel = $('.panel')
@@ -128,6 +130,7 @@
   var sendBtn = $('.send')
   var typing = $('.typing')
   var newBtn = $('.newchat')
+  var announcer = $('.sr')
 
   bubble.addEventListener('click', function () { setOpen(!open) })
   teaser.addEventListener('click', function () { setOpen(true) })
@@ -145,6 +148,17 @@
   $('.form').addEventListener('submit', function (e) { e.preventDefault(); send() })
   panel.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && !e.isComposing) { e.preventDefault(); setOpen(false) }
+    // Full screen on a phone: keep Tab inside the chat instead of the page hidden behind it.
+    if (e.key === 'Tab' && !wide()) {
+      var items = [].filter.call(panel.querySelectorAll('button:not([disabled]),a[href],textarea'), function (el) {
+        return el.offsetParent !== null
+      })
+      if (!items.length) return
+      var first = items[0]
+      var last = items[items.length - 1]
+      if (e.shiftKey && root.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && root.activeElement === last) { e.preventDefault(); first.focus() }
+    }
   })
   input.addEventListener('keydown', function (e) {
     if (e.isComposing || e.keyCode === 229) return
@@ -156,10 +170,15 @@
   })
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) clearTimeout(pollTimer)
-    else pollNow()
+    else { resync(); pollNow() }
   })
   window.addEventListener('online', pollNow)
-  window.addEventListener('pageshow', function (e) { if (e.persisted) pollNow() })
+  window.addEventListener('pageshow', function (e) { if (e.persisted) { resync(); pollNow() } })
+  window.addEventListener('storage', function (e) { if (e.key === STORE_KEY) { resync(); pollNow() } })
+  var narrow = window.matchMedia('(min-width: 601px)')
+  var onWidth = function () { if (open) syncModal() }
+  if (narrow.addEventListener) narrow.addEventListener('change', onWidth)
+  else if (narrow.addListener) narrow.addListener(onWidth)
 
   function mount() {
     document.body.appendChild(host)
@@ -181,8 +200,9 @@
     bubble.setAttribute('aria-expanded', String(open))
     teaser.style.display = 'none'
     try { sessionStorage.setItem(OPEN_KEY, open ? '1' : '') } catch (e) { /* ignore */ }
-    lockScroll(open && !wide())
+    syncModal()
     if (open) {
+      resync()
       state.unread = 0
       save()
       render(true)
@@ -194,6 +214,27 @@
       bubble.focus()
       schedulePoll()
     }
+  }
+
+  // On a phone the open panel covers the page, so it acts as a modal dialog.
+  function syncModal() {
+    var modal = open && !wide()
+    panel.setAttribute('aria-modal', modal ? 'true' : 'false')
+    lockScroll(modal)
+  }
+
+  // Another tab, or a page restored from the back/forward cache, may have moved the
+  // chat on. Pick up what is saved instead of writing stale state over it.
+  function resync() {
+    if (sending) return false
+    var s = load()
+    if (!s || s.id === state.id) return false
+    state = s
+    rendered = 0
+    list.innerHTML = ''
+    setTyping(false)
+    render(true)
+    return true
   }
 
   // Keeps the page behind a full-screen mobile panel from scrolling.
@@ -342,6 +383,10 @@
       notice('Messages are limited to ' + MAX_TEXT + ' characters. Please shorten it or send it in two parts.')
       return
     }
+    resync()
+    // Clear now, so anything typed while this sends is kept, and put it back if it fails.
+    input.value = ''
+    input.style.height = 'auto'
     sending = true
     sendBtn.disabled = true
     clearTimeout(pollTimer)
@@ -354,13 +399,14 @@
         })
       })
       .then(function () {
-        input.value = ''
-        input.style.height = 'auto'
         state.lastActivity = Date.now()
         save()
         return poll()
       })
       .catch(function (err) {
+        input.value = input.value ? text + '\n' + input.value : text
+        input.style.height = 'auto'
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px'
         if (err.status === 404) {
           resetChat()
           notice('That chat had ended, so this message did not send. Send it again to start a new chat.')
@@ -384,15 +430,19 @@
         setTyping(!!res.typing)
         if (!res.messages || !res.messages.length) return true
         var added = false
+        var unseen = 0
+        var fromJohn = false
         res.messages.forEach(function (m) {
           if (typeof m.n !== 'number' || m.n <= state.last) return
           state.messages.push({ from: m.from, text: m.text, ts: m.ts || Date.now() })
           state.last = m.n
           if (m.ts && m.ts > state.lastActivity) state.lastActivity = m.ts
-          if (m.from !== 'customer' && !open) state.unread++
+          if (m.from !== 'customer' && !open) { state.unread++; unseen++; if (m.from === 'john') fromJohn = true }
           added = true
         })
         if (added) { save(); render(false) }
+        // The badge is visual only. Screen readers hear about replies while the chat is closed here.
+        if (unseen && !open) announcer.textContent = (fromJohn ? 'John replied in the chat. ' : 'New message in the chat. ') + state.unread + ' unread.'
         return true
       })
       .catch(function (err) {
@@ -423,9 +473,10 @@
   // a late reply from John is never thrown away.
   function checkStale() {
     if (Date.now() - state.lastActivity < STALE_MS) return
-    // Only a poll that worked can prove the chat really went quiet.
+    // Only a poll that worked can prove the chat really went quiet, and a send in flight means it did not.
+    var id = state.id
     poll().then(function (ok) {
-      if (ok && state.id && Date.now() - state.lastActivity >= STALE_MS) {
+      if (ok && !sending && state.id === id && Date.now() - state.lastActivity >= STALE_MS) {
         resetChat()
         notice('Your previous chat has ended. Start a new one below.')
       }

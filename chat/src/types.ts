@@ -25,6 +25,7 @@ export interface Env {
   TRANSFER_WAIT_SECONDS?: string
   ENGAGED_HANDOFF_SECONDS?: string
   RING_ON_FIRST_QUESTION?: string
+  RINGS_PER_HOUR?: string
   QUIET_HOURS?: string
   TIMEZONE?: string
   BOT_DAILY_BUDGET?: string
@@ -45,6 +46,8 @@ export interface ChatMessage {
   ts: number
   /** A line the system posts on its own (John is not available), not an answer to anything. The bot looks past it. */
   sys?: boolean
+  /** A bot line written by the worker, not the model (John's phone was rung). The model sees it as a system notice, never as its own words. */
+  canned?: boolean
 }
 
 export interface RoomMeta {
@@ -62,7 +65,7 @@ export interface RoomMeta {
   handoffTries?: number
   /** While John's phone is ringing for this chat: when the bot gives up on him and says he is not available. */
   transferUntil?: number | null
-  /** How many times this chat has rung John's phone. Bounded so one chat cannot ring it all night. */
+  /** How many times this chat has actually rung John's phone. Bounded so one chat cannot ring it all night. */
   transfers?: number
   /** Set once the bot has told the customer John is not available. */
   unavailableAt?: number
