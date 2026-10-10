@@ -117,10 +117,10 @@ body.page-id-12770 .svcz-inner {
 
 
 /* ---------- Header photo ----------
-   Rooftop condenser bank with the downtown San Jose skyline and water tower,
+   Packaged rooftop units on a commercial roof with the apartment blocks behind,
    already in the media library, so nothing to upload.
-   The photo fills a 4:3 band across the top of the hero card, so the skyline stays
-   in view at any screen width, then fades into the dark where the text sits. */
+   The photo fills a 16:9 band across the top of the hero card, the whole frame in view
+   at any screen width, then fades into the dark where the text sits. */
 
 body.page-id-12770 .svcc-hero {
   position: relative;
@@ -134,19 +134,19 @@ body.page-id-12770 .svcc-hero::before {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 16 / 9;
   z-index: -1;
   background:
-    linear-gradient(180deg, rgba(16, 22, 30, 0.04) 0%, rgba(16, 22, 30, 0.10) 42%, rgba(16, 22, 30, 0.82) 52%, rgba(16, 22, 30, 0.88) 74%),
-    url("https://www.air.systems/wp-content/uploads/2024/04/20180827_095444-scaled.webp") center top / cover no-repeat;
-  -webkit-mask-image: linear-gradient(180deg, #000 48%, transparent 100%);
-  mask-image: linear-gradient(180deg, #000 48%, transparent 100%);
+    linear-gradient(180deg, rgba(16, 22, 30, 0.04) 0%, rgba(16, 22, 30, 0.10) 56%, rgba(16, 22, 30, 0.80) 70%, rgba(16, 22, 30, 0.88) 88%),
+    url("https://www.air.systems/wp-content/uploads/2026/01/20180714_131731-scaled.jpg") center top / cover no-repeat;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
 }
-/* text starts just under the skyline. A percentage padding follows the card's width,
-   which is exactly what the photo band's height follows too */
+/* text starts over the roof in front of the units. A percentage padding follows the
+   card's width, which is exactly what the photo band's height follows too */
 body.page-id-12770 .svcc-hero__in {
   max-width: none;
-  padding-top: 38%;
+  padding-top: 40%;
 }
 body.page-id-12770 .svcc-hero .svcc-h1 {
   margin: 0 0 14px;

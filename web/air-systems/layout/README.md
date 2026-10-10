@@ -52,9 +52,8 @@ menu button and slide-out take over, the same ones phones already use.
 
 Part 2, commercial page: every section held at the 852px the text already used, the
 proof section turned into a card with a two by two grid, and the hero rebuilt with the
-rooftop condenser and downtown San Jose skyline photo
-(`2024/04/20180827_095444-scaled.webp`) in a 4:3 band that fades into the dark behind
-the text.
+packaged rooftop units photo (`2026/01/20180714_131731-scaled.jpg`) in a 16:9 band that
+fades into the dark behind the text.
 
 Part 3, everything else:
 
@@ -110,7 +109,7 @@ Header checked on the commercial page, the home page and the Sunnyvale city page
 screen and closes.
 
 Hero text contrast on the commercial page, measured against the brightest 5% of the
-photo behind each line: eyebrow 5.3:1 desktop and 6.0:1 phone, headline 13.1:1 and
+photo behind each line: eyebrow 5.5:1 desktop and 6.2:1 phone, headline 13.3:1 and
 15.3:1, intro 11.0:1 and 11.1:1. All pass WCAG AA.
 
 ## Found, not changed
