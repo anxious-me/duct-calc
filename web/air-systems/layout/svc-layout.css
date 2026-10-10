@@ -1,0 +1,297 @@
+/* =====================================================================
+   Silicon Valley Comfort, layout fix
+   Paste at the very bottom of Appearance > Customize > Additional CSS.
+   Part 1 fixes the header on every page.
+   Part 2 only touches the Commercial HVAC San Jose page (page-id-12770).
+   Part 3 puts every other page in one centered column.
+   ===================================================================== */
+
+
+/* ---------- PART 1. Header buttons stop hanging off the right edge ----------
+   Logo, eight menu items and the call / text / schedule buttons need about
+   1380px, the nav row only had 1196px, so Schedule Service got cut off on
+   anything narrower than about 1500px and sat off center on wider screens.
+   The body prefix outranks the header's own stylesheet, which loads after this one. */
+
+body #svc-header .svc-nav-in {
+  max-width: 1340px;
+  gap: 16px;
+}
+body #svc-header .svc-menu {
+  gap: 0;
+  margin-left: 0;
+}
+body #svc-header .svc-menu .mt,
+body #svc-header .svc-menu a.link {
+  padding-left: 9px;
+  padding-right: 9px;
+}
+
+/* small laptops: drop the header Text button, the top strip already has Text Us */
+@media (max-width: 1360px) {
+  body #svc-header .svc-cta .btn.text { display: none; }
+  body #svc-header .svc-logo .wm { font-size: 19px; }
+}
+
+/* tablets and narrow laptops get the menu button instead of a squeezed nav */
+@media (max-width: 1240px) {
+  body #svc-header .svc-menu,
+  body #svc-header .svc-cta { display: none; }
+  body #svc-header .svc-burger { display: flex; }
+  body #svc-header .svc-drawer { display: block; }
+}
+
+
+/* ---------- PART 2. Commercial page, one centered column top to bottom ----------
+   Text was held at 900px but the hero, stats, price table, steps, callout,
+   related links and the two proof sections ran to the edge of the screen.
+   Now every section shares the same two edges. */
+
+body.page-id-12770 {
+  --svcc-col: 852px;     /* the one width everything lines up to, same as the text before */
+  --svcc-gutter: 24px;   /* side space on phones and tablets */
+}
+
+/* the theme pads this wrapper by different amounts per screen size,
+   which is why text and cards drifted apart on tablets. The column owns the gutter now. */
+body.page-id-12770 .entry-content-wrap {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* every section: same width, same center line */
+body.page-id-12770 .entry-content > * {
+  box-sizing: border-box;
+  width: auto !important;
+  max-width: min(var(--svcc-col), calc(100% - 2 * var(--svcc-gutter))) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+/* text no longer carries its own side padding, so its edge is the column edge.
+   important because the page's own style block loads after Additional CSS */
+body.page-id-12770 .entry-content > .wp-block-paragraph,
+body.page-id-12770 .entry-content > .wp-block-heading,
+body.page-id-12770 .entry-content > ul.svcc-bul,
+body.page-id-12770 .entry-content > ol {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* orange accent bar sits on the column edge instead of poking out past it */
+body.page-id-12770 .entry-content > .svcc-inline-cta {
+  padding-left: 14px;
+  padding-right: 0;
+}
+
+/* the proof section was built to run wall to wall with inline styles; make it a card in the column */
+body.page-id-12770 .entry-content > .svc-verify-links {
+  border-radius: 14px;
+  padding: 40px 0 !important;
+  margin-top: 30px !important;
+  margin-bottom: 30px !important;
+}
+body.page-id-12770 .svc-verify-links > div {
+  max-width: none !important;
+  padding: 0 clamp(20px, 4vw, 32px) !important;
+}
+/* four proof cards: two by two instead of three plus an orphan */
+body.page-id-12770 .svc-verify-links div[style*="auto-fit"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+@media (max-width: 600px) {
+  body.page-id-12770 .svc-verify-links div[style*="auto-fit"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Check it yourself block: content fills the column, no extra inset */
+body.page-id-12770 .svcz-band,
+body.page-id-12770 .svcz-inner {
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+
+/* ---------- Header photo ----------
+   Packaged rooftop units on a commercial roof with the apartment blocks behind,
+   already in the media library, so nothing to upload.
+   The photo fills a 16:9 band across the top of the hero card, the whole frame in view
+   at any screen width, then fades into the dark where the text sits. */
+
+body.page-id-12770 .svcc-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  margin-top: clamp(16px, 3vw, 32px);
+  background: linear-gradient(160deg, #1b232d 0%, #1d2733 55%, #3a2a22 100%);
+  padding: 32px clamp(20px, 5vw, 44px) 48px;
+}
+body.page-id-12770 .svcc-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  aspect-ratio: 16 / 9;
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(16, 22, 30, 0.04) 0%, rgba(16, 22, 30, 0.10) 56%, rgba(16, 22, 30, 0.80) 70%, rgba(16, 22, 30, 0.88) 88%),
+    url("https://www.air.systems/wp-content/uploads/2026/01/20180714_131731-scaled.jpg") center top / cover no-repeat;
+  -webkit-mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 70%, transparent 100%);
+}
+/* text starts over the roof in front of the units. A percentage padding follows the
+   card's width, which is exactly what the photo band's height follows too */
+body.page-id-12770 .svcc-hero__in {
+  max-width: none;
+  padding-top: 40%;
+}
+body.page-id-12770 .svcc-hero .svcc-h1 {
+  margin: 0 0 14px;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.55);
+}
+/* the theme's heading and paragraph margins were beating the hero's own,
+   which left a dead gap above the headline */
+body.page-id-12770 .svcc-hero .svcc-eyebrow {
+  margin: 0 0 10px;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+}
+body.page-id-12770 .svcc-hero .svcc-lead { margin: 0 0 22px; }
+@media (max-width: 600px) {
+  body.page-id-12770 .svcc-hero { padding: 24px 18px 34px; }
+}
+
+
+/* ---------- PART 3. Every other page, one centered column ----------
+   Same idea as the commercial page, applied site wide on tablets and desktops.
+   Colored bands used to run wall to wall while text and cards sat at 1152px or
+   820px, so every page stepped in and out like a Christmas tree. Now the whole
+   content area is one centered column and nothing inside it can break out.
+   Phones are already single column and keep their own gutters. */
+
+@media (min-width: 782px) {
+
+  body:not(.page-id-12770) {
+    --svc-col: 1152px;   /* the site rail: 1200px minus its 24px gutters */
+  }
+  /* city service pages are long reads held at 820px, so their column wraps that */
+  body:not(.page-id-12770):has(.svc-cs-body, .svc-cs-intro) {
+    --svc-col: 900px;
+  }
+
+  /* the content area itself is the column */
+  body:not(.page-id-12770) .entry-content-wrap {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+  body:not(.page-id-12770) .site-main .entry-content {
+    box-sizing: border-box;
+    width: auto !important;
+    max-width: min(var(--svc-col), calc(100% - 48px)) !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  /* every way a section was breaking out to the screen edge, switched off */
+  body:not(.page-id-12770) .entry-content :is(
+    .alignfull, .alignwide, [style*="100vw"], [style*="50vw"],
+    .band, .svc-home .heroA, .svc-home .heroA-foot,
+    .svc-xo > section, .svcc > .svcc-hero, .svcc > .svcc-band,
+    .svch-hero-title, .svch-band
+  ) {
+    width: auto !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  /* colored bands become cards in the column, with a gap so neighbours
+     read as separate cards instead of one slab with notched corners */
+  body:not(.page-id-12770) .entry-content :is(
+    .svcz-hero, .svcz-band, .band, .svc-home > .heroA, .svc-home > .heroA-foot,
+    .svc-xo > section, .svcc > .svcc-hero, .svcc > .svcc-band, .svcwx-band,
+    .svch-hero-title, .svch-band,
+    .svc-cs-intro, .svc-cs-body, .svc-cs-hoods, .svc-cs-faq, .svc-cs-related, .svc-city-children,
+    .svc-verify-links, .kb-row-layout-wrap.alignfull, .wp-block-cover.alignfull, .wp-block-group.alignfull.has-background
+  ) {
+    border-radius: 14px;
+    overflow: hidden;
+    margin-top: 16px !important;
+    margin-bottom: 16px !important;
+  }
+
+  /* home: the hero and its stats strip stay one card */
+  body:not(.page-id-12770) .svc-home > .heroA {
+    border-radius: 14px 14px 0 0;
+    margin-bottom: 0 !important;
+  }
+  body:not(.page-id-12770) .svc-home > .heroA-foot {
+    border-radius: 0 0 14px 14px;
+    margin-top: 0 !important;
+  }
+  /* bands: cards sitting in a white band line up with the column edge,
+     colored bands get real card padding */
+  body:not(.page-id-12770) .entry-content .band:not(.band--surface, .band--charcoal, .band--tint, .band--ink, .svc-cta) > .rail {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  body:not(.page-id-12770) .entry-content .band:is(.band--surface, .band--charcoal, .band--tint, .band--ink) > .rail {
+    padding-left: clamp(24px, 3vw, 40px);
+    padding-right: clamp(24px, 3vw, 40px);
+  }
+
+  /* weather widget filled only 880px of the column */
+  body:not(.page-id-12770) .entry-content .svcwx {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+  body:not(.page-id-12770) .entry-content .svcwx :is(.svcwx-loading, .svcwx-band) {
+    max-width: none !important;
+  }
+
+  /* blog posts: the title ran from the screen edge and the featured image ran wall to
+     wall, while the white article card sat at 1252px. All three share the card's edges now,
+     and the post text sits inside the card instead of touching its edges */
+  body.single-post .entry-hero .hero-container {
+    max-width: var(--global-content-width, 1300px) !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-left: 24px !important;
+    padding-right: 24px !important;
+  }
+  body.single-post .post-thumbnail {
+    width: auto !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    border-radius: 14px 14px 0 0;
+    overflow: hidden;
+  }
+
+  /* featured reviews were a 720px strip; two side by side fill the column */
+  body:not(.page-id-12770) .entry-content .svc-reviews__feature {
+    max-width: none;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    align-items: start;
+  }
+}
+
+/* Phones: the city page sections ran 24px past the right edge of the screen,
+   cutting the last word off most lines. Pull them into the column like everything else. */
+@media (max-width: 781px) {
+  body:not(.page-id-12770) .entry-content :is(.svc-cs-intro, .svc-cs-body, .svc-cs-hoods, .svc-cs-faq, .svc-cs-related, .svc-city-children) {
+    width: auto !important;
+    max-width: 100% !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+    border-radius: 14px;
+  }
+}
